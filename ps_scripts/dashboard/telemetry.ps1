@@ -12,15 +12,47 @@ $used = if ($drive) { [math]::Round($drive.Used / 1GB, 2) } else { 0 }
 $total = [math]::Round($free + $used, 2)
 $pct = if ($total -gt 0) { [math]::Round(($used / $total) * 100, 1) } else { 0 }
 
-# 2. Sessões
-$profiles = (Get-ChildItem -Path 'C:\Users' -Directory -Force -ErrorAction SilentlyContinue |
-             Where-Object { $_.Name -notmatch '^(Public|Público|Default|All Users|Default User|Usuário Padrão)$' }).Count
+# 2. Perfis e Sessões
+#
+# Perfis: Win32_UserProfile (mais rico que listar C:\Users — traz LastUseTime
+# e flag Loaded). Filtra perfis especiais e contas de sistema.
+$profilesList = @()
+try {
+    $profilesRaw = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
+                   Where-Object {
+                       $_.Special -eq $false -and
+                       -not [string]::IsNullOrWhiteSpace($_.LocalPath) -and
+                       $_.LocalPath -notmatch 'Public|Público|Default|All Users|Usuário Padrão'
+                   }
+    foreach ($p in $profilesRaw) {
+        $name = Split-Path $p.LocalPath -Leaf
+        $lastUse = if ($p.LastUseTime) {
+            ([datetime]$p.LastUseTime).ToString('yyyy-MM-dd HH:mm')
+        } else { 'N/A' }
+        $profilesList += [PSCustomObject]@{
+            Name    = $name
+            LastUse = $lastUse
+            Loaded  = [bool]$p.Loaded
+        }
+    }
+} catch { }
+$profiles = $profilesList.Count
+
+# Usuários logados agora: quser (fonte canônica do Windows para sessões ativas).
+$loggedNames = @()
 $loggedUsers = 0
 try {
     $q = quser 2>&1
     $lines = $q -split '\r?\n' | Where-Object { $_.Trim() -ne '' }
     if ($lines.Count -gt 1 -and $lines[0] -match 'USERNAME|USUÁRIO|NOME|ID') {
-        $loggedUsers = $lines.Count - 1
+        for ($i = 1; $i -lt $lines.Count; $i++) {
+            $parts = $lines[$i].Trim() -split '\s+'
+            if ($parts.Count -ge 1) {
+                $u = $parts[0].TrimStart('>')
+                if ($u) { $loggedNames += $u }
+            }
+        }
+        $loggedUsers = $loggedNames.Count
     }
 } catch { }
 
@@ -207,6 +239,8 @@ $rebootStatus = if ($rebootPending) { "Pendente (" + ($rebootReasons -join ", ")
     DiskPct = $pct
     ProfilesCount = $profiles
     LoggedUsers = $loggedUsers
+    ProfilesList = @($profilesList)
+    LoggedNames = @($loggedNames)
     IP = $ip
     MAC = $mac
     Uptime = $uptimeStr
