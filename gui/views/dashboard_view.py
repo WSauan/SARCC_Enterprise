@@ -6,7 +6,8 @@ import time
 from datetime import datetime
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QPushButton, QGroupBox, 
-                             QGridLayout, QTextEdit, QComboBox, QMessageBox, QProgressBar, QScrollArea, QInputDialog)
+                             QGridLayout, QTextEdit, QComboBox, QMessageBox, QProgressBar, QScrollArea, QInputDialog,
+                             QDialog, QTableWidget, QTableWidgetItem, QHeaderView)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from core.remote_connection import RemoteConnectionManager
@@ -14,6 +15,93 @@ from core.task_queue import TaskQueueManager
 from core.database import DatabaseManager
 from core.ps_loader import load_ps_template, PsTemplateError
 from gui.views.base_view import BaseView
+
+class ProfilesDialog(QDialog):
+    """Lista completa de perfis de usuário do endpoint alvo."""
+
+    def __init__(self, profiles: list, logged_names: set, target_pc: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Perfis de Usuário — {target_pc}")
+        self.resize(560, 480)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        info = QLabel(
+            f"<b>{len(profiles)}</b> perfil(is) — "
+            f"<b>{len(logged_names)}</b> conectado(s) agora."
+        )
+        info.setStyleSheet("font-size: 13px;")
+        layout.addWidget(info)
+
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Usuário", "Último Acesso", "Status"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSortingEnabled(True)
+        self.table.verticalHeader().setVisible(False)
+
+        # Ordena: logados primeiro, depois por último acesso mais recente
+        def sort_key(p):
+            is_logged = p.get("Name", "") in logged_names
+            return (not is_logged, p.get("LastUse", "") or "")
+        profiles_sorted = sorted(profiles, key=sort_key)
+
+        for p in profiles_sorted:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            name_item = QTableWidgetItem(p.get("Name", "?"))
+            self.table.setItem(row, 0, name_item)
+
+            last_use_item = QTableWidgetItem(_format_last_use(p.get("LastUse", "N/A")))
+            last_use_item.setData(Qt.ItemDataRole.UserRole, p.get("LastUse", ""))
+            self.table.setItem(row, 1, last_use_item)
+
+            is_logged = p.get("Name", "") in logged_names
+            status_item = QTableWidgetItem("🟢 Logado" if is_logged else "⚪ Inativo")
+            if is_logged:
+                status_item.setForeground(Qt.GlobalColor.green)
+            self.table.setItem(row, 2, status_item)
+
+        layout.addWidget(self.table)
+
+        btn_close = QPushButton("Fechar")
+        btn_close.setFixedHeight(32)
+        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_close.setStyleSheet(
+            "padding: 0 20px; background-color: #4a90e2; color: white; "
+            "font-weight: bold; border-radius: 4px;"
+        )
+        btn_close.clicked.connect(self.close)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_close)
+        layout.addLayout(btn_layout)
+
+
+def _format_last_use(dt_str: str) -> str:
+    """Converte 'YYYY-MM-DD HH:MM' em texto relativo amigável."""
+    if not dt_str or dt_str == "N/A":
+        return "N/A"
+    try:
+        dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return dt_str
+
+    delta = datetime.now() - dt
+    if delta.days == 0:
+        return f"Hoje {dt.strftime('%H:%M')}"
+    if delta.days == 1:
+        return f"Ontem {dt.strftime('%H:%M')}"
+    if delta.days < 7:
+        return f"{delta.days} dias atrás"
+    return dt.strftime("%d/%m/%Y")
 
 class PingTrackerWorker(QThread):
     success = pyqtSignal(str)
@@ -215,26 +303,62 @@ class DashboardView(BaseView):
         sys_layout.addLayout(sys_grid)
         grid_cards.addWidget(self.card_sys, 0, 0)
 
+        # ── Card de Perfis (contadores + lista dos 5 mais relevantes) ────────
         self.card_profiles = QGroupBox("👥 Sessões e Perfis de Usuários")
-        p_layout = QHBoxLayout(self.card_profiles)
+        p_layout = QVBoxLayout(self.card_profiles)
         p_layout.setContentsMargins(15, 20, 15, 15)
-        
+        p_layout.setSpacing(10)
+
+        # Linha 1: contadores lado a lado
+        counters = QHBoxLayout()
+        counters.setSpacing(20)
+
         v_prof = QVBoxLayout()
         self.lbl_profiles_count = QLabel("-")
-        self.lbl_profiles_count.setStyleSheet("font-size: 26px; font-weight: bold; color: #2a7de1;")
+        self.lbl_profiles_count.setStyleSheet("font-size: 22px; font-weight: bold; color: #2a7de1;")
         self.lbl_profiles_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v_prof.addWidget(self.lbl_profiles_count)
         v_prof.addWidget(QLabel("Perfis na Máquina", alignment=Qt.AlignmentFlag.AlignCenter))
-        
+
         v_log = QVBoxLayout()
         self.lbl_logged_count = QLabel("-")
-        self.lbl_logged_count.setStyleSheet("font-size: 26px; font-weight: bold; color: #f0ad4e;")
+        self.lbl_logged_count.setStyleSheet("font-size: 22px; font-weight: bold; color: #f0ad4e;")
         self.lbl_logged_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v_log.addWidget(self.lbl_logged_count)
         v_log.addWidget(QLabel("Usuários Logados", alignment=Qt.AlignmentFlag.AlignCenter))
-        
-        p_layout.addLayout(v_prof)
-        p_layout.addLayout(v_log)
+
+        counters.addLayout(v_prof)
+        counters.addLayout(v_log)
+        p_layout.addLayout(counters)
+
+        # Linha 2: tabela compacta (5 linhas visíveis)
+        self.tbl_profiles = QTableWidget(0, 3)
+        self.tbl_profiles.setHorizontalHeaderLabels(["Usuário", "Último Acesso", "Status"])
+        self.tbl_profiles.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tbl_profiles.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.tbl_profiles.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.tbl_profiles.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tbl_profiles.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.tbl_profiles.verticalHeader().setVisible(False)
+        self.tbl_profiles.setShowGrid(False)
+        self.tbl_profiles.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # Altura: cabeçalho + 5 linhas. Ajustável.
+        header_h = self.tbl_profiles.horizontalHeader().height()
+        row_h = 24
+        self.tbl_profiles.setFixedHeight(header_h + (row_h * 5) + 4)
+        p_layout.addWidget(self.tbl_profiles)
+
+        # Linha 3: botão "Ver todos (N)"
+        self.btn_view_all_profiles = QPushButton("Ver todos")
+        self.btn_view_all_profiles.setFixedHeight(26)
+        self.btn_view_all_profiles.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_view_all_profiles.setStyleSheet(
+            "padding: 0 12px; font-size: 12px; font-weight: bold; border-radius: 4px;"
+        )
+        self.btn_view_all_profiles.setVisible(False)
+        self.btn_view_all_profiles.clicked.connect(self._open_profiles_dialog)
+
+        p_layout.addWidget(self.btn_view_all_profiles, alignment=Qt.AlignmentFlag.AlignRight)
         grid_cards.addWidget(self.card_profiles, 0, 1)
 
         content_layout.addLayout(grid_cards)
@@ -293,41 +417,37 @@ class DashboardView(BaseView):
         
         bottom_panels.addWidget(self.card_resources, stretch=65)
 
-        lic_group = QGroupBox("🔑 Gestão de Versão do Windows")
+        lic_group = QGroupBox("🔑 Licenciamento (KMS)")
         lic_layout = QVBoxLayout(lic_group)
-        lic_layout.setContentsMargins(15, 20, 15, 15)
-        
-        self.lbl_activation = QLabel("Status Atual: -")
-        self.lbl_activation.setStyleSheet("font-weight: bold; margin-bottom: 10px;")
+        lic_layout.setContentsMargins(12, 18, 12, 10)
+        lic_layout.setSpacing(8)
+
+        self.lbl_activation = QLabel("Status: -")
+        self.lbl_activation.setStyleSheet("font-weight: bold;")
         lic_layout.addWidget(self.lbl_activation)
 
-        # ── Chaves GVLK (KMS) ─────────────────────────────────────────────
-        # A Microsoft usa a MESMA GVLK por EDIÇÃO, compartilhada entre Windows
-        # 10 e Windows 11.
-        # Fonte oficial: https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys
         self.cmb_license = QComboBox()
-        self.cmb_license.setFixedHeight(32)
+        self.cmb_license.setFixedHeight(28)
         self.cmb_license.addItem("Windows 10/11 Pro",             "W269N-WFGWX-YVC9B-4J6C9-T83GX")
         self.cmb_license.addItem("Windows 10/11 Enterprise",      "NPPR9-FWDCX-D2C8J-H872K-2YT43")
         self.cmb_license.addItem("Windows 10/11 Education",       "NW6C2-QMPVW-D7KKK-3GKT6-VCFB2")
         self.cmb_license.addItem("Windows 10/11 Pro Education",   "6TP4R-GNPTD-KYYHQ-7B7DP-J447Y")
         self.cmb_license.addItem("Windows 10/11 Enterprise LTSC", "M7XTQ-FN8P6-TTKYV-9D4CC-J462D")
-        self.cmb_license.setStyleSheet("padding: 0 10px;")
+        self.cmb_license.setStyleSheet("padding: 0 8px;")
         lic_layout.addWidget(self.cmb_license)
-        
-        lbl_info = QLabel("<i>Altera a versão do SO em background.</i>")
-        lbl_info.setStyleSheet("color: gray; margin-top: 5px;")
-        lic_layout.addWidget(lbl_info)
-        
-        lic_layout.addStretch()
-        
-        self.btn_apply_key = QPushButton("⚙️ Injetar Chave KMS")
-        self.btn_apply_key.setFixedHeight(32)
+
+        self.btn_apply_key = QPushButton("⚙️ Aplicar Chave")
+        self.btn_apply_key.setFixedHeight(28)
         self.btn_apply_key.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_apply_key.setStyleSheet("background-color: #f0ad4e; color: black; padding: 0 15px; font-weight: bold; border-radius: 4px;")
+        self.btn_apply_key.setStyleSheet(
+            "background-color: #f0ad4e; color: black; padding: 0 12px; "
+            "font-weight: bold; border-radius: 4px; font-size: 12px;"
+        )
         self.btn_apply_key.clicked.connect(self.change_windows_key)
         lic_layout.addWidget(self.btn_apply_key)
 
+        lic_layout.addStretch()
+        
         bottom_panels.addWidget(lic_group, stretch=35)
         content_layout.addLayout(bottom_panels)
 
@@ -567,8 +687,18 @@ class DashboardView(BaseView):
         self.prog_ram.setFormat("%p%")
         self.lbl_ram_info.setText(f"RAM: Usando {usedRam} GB de {totalRam} GB")
 
-        self.lbl_profiles_count.setText(str(data.get("ProfilesCount", 0)))
-        self.lbl_logged_count.setText(str(data.get("LoggedUsers", 0)))
+        # Perfis e sessões
+        profiles_list = data.get("ProfilesList", [])
+        if not isinstance(profiles_list, list):
+            profiles_list = [profiles_list] if profiles_list else []
+        logged_names = set(data.get("LoggedNames", []) or [])
+        # Guarda para o dialog "Ver todos"
+        self._last_profiles_list = profiles_list
+        self._last_logged_names = logged_names
+
+        self.lbl_profiles_count.setText(str(len(profiles_list)))
+        self.lbl_logged_count.setText(str(len(logged_names)))
+        self._populate_profiles_table(profiles_list, logged_names)
 
         self.lbl_hostname.setText(f"Hostname: {data.get('HostName', 'N/A')}")
         self.lbl_os.setText(f"SO: {data.get('OSVersion', 'N/A')}")
@@ -659,6 +789,52 @@ class DashboardView(BaseView):
         agora = datetime.now().strftime('%H:%M:%S')
         self.lbl_last_sync.setText(f" Última atualização: Falha às {agora}")
         QMessageBox.warning(self, "Aviso Operacional", f"{err}")
+
+    def _populate_profiles_table(self, profiles: list, logged_names: set):
+        """Preenche a tabela compacta com os 5 perfis mais relevantes."""
+        self.tbl_profiles.setRowCount(0)
+
+        if not profiles:
+            self.btn_view_all_profiles.setVisible(False)
+            return
+
+        # Ordena: logados primeiro, depois por último acesso mais recente
+        def sort_key(p):
+            is_logged = p.get("Name", "") in logged_names
+            return (not is_logged, p.get("LastUse", "") or "")
+        profiles_sorted = sorted(profiles, key=sort_key)
+
+        for p in profiles_sorted[:5]:
+            row = self.tbl_profiles.rowCount()
+            self.tbl_profiles.insertRow(row)
+
+            name_item = QTableWidgetItem(p.get("Name", "?"))
+            self.tbl_profiles.setItem(row, 0, name_item)
+
+            last_use_item = QTableWidgetItem(_format_last_use(p.get("LastUse", "N/A")))
+            self.tbl_profiles.setItem(row, 1, last_use_item)
+
+            is_logged = p.get("Name", "") in logged_names
+            status_item = QTableWidgetItem("🟢 Logado" if is_logged else "⚪ Inativo")
+            if is_logged:
+                status_item.setForeground(Qt.GlobalColor.green)
+            self.tbl_profiles.setItem(row, 2, status_item)
+
+        # Botão "Ver todos" só aparece se houver mais que 5
+        total = len(profiles)
+        if total > 5:
+            self.btn_view_all_profiles.setText(f"Ver todos ({total}) →")
+            self.btn_view_all_profiles.setVisible(True)
+        else:
+            self.btn_view_all_profiles.setVisible(False)
+
+    def _open_profiles_dialog(self):
+        """Abre dialog com a lista completa de perfis."""
+        profiles = getattr(self, "_last_profiles_list", [])
+        logged_names = getattr(self, "_last_logged_names", set())
+        target = self.inp_target.text().strip() or "N/A"
+        dlg = ProfilesDialog(profiles, logged_names, target, parent=self)
+        dlg.exec()
 
     def change_windows_key(self):
         target = self.inp_target.text().strip()
