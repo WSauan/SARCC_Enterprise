@@ -301,12 +301,17 @@ class DashboardView(BaseView):
         self.lbl_activation.setStyleSheet("font-weight: bold; margin-bottom: 10px;")
         lic_layout.addWidget(self.lbl_activation)
 
+        # ── Chaves GVLK (KMS) ─────────────────────────────────────────────
+        # A Microsoft usa a MESMA GVLK por EDIÇÃO, compartilhada entre Windows
+        # 10 e Windows 11.
+        # Fonte oficial: https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys
         self.cmb_license = QComboBox()
         self.cmb_license.setFixedHeight(32)
-        self.cmb_license.addItem("Windows 10 Education", "NW6C2-QMPVW-D7KKK-3GKT6-VCFB2")
-        self.cmb_license.addItem("Windows 10 Pro Education", "6TP4R-GNPTD-KYYHQ-7B7DP-J447Y")
-        self.cmb_license.addItem("Windows 10 Enterprise", "NPPR9-FWDCX-D2C8J-H872K-2YT43")
-        self.cmb_license.addItem("Windows 10 Pro", "W269N-WFGWX-YVC9B-4J6C9-T83GX")
+        self.cmb_license.addItem("Windows 10/11 Pro",             "W269N-WFGWX-YVC9B-4J6C9-T83GX")
+        self.cmb_license.addItem("Windows 10/11 Enterprise",      "NPPR9-FWDCX-D2C8J-H872K-2YT43")
+        self.cmb_license.addItem("Windows 10/11 Education",       "NW6C2-QMPVW-D7KKK-3GKT6-VCFB2")
+        self.cmb_license.addItem("Windows 10/11 Pro Education",   "6TP4R-GNPTD-KYYHQ-7B7DP-J447Y")
+        self.cmb_license.addItem("Windows 10/11 Enterprise LTSC", "M7XTQ-FN8P6-TTKYV-9D4CC-J462D")
         self.cmb_license.setStyleSheet("padding: 0 10px;")
         lic_layout.addWidget(self.cmb_license)
         
@@ -665,8 +670,19 @@ class DashboardView(BaseView):
         version_name = self.cmb_license.currentText()
         gblk_key = self.cmb_license.currentData()
 
-        reply = QMessageBox.question(self, 'Confirmação', f'Alterar a versão do Windows em {target} para {version_name}?\n\nChave GVLK: {gblk_key}', QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply != QMessageBox.StandardButton.Yes: return
+        reply = QMessageBox.question(
+            self,
+            'Confirmar Mudança de Edição',
+            f"Alterar a EDIÇÃO do Windows em {target}?\n\n"
+            f"Nova edição: {version_name}\n"
+            f"Chave GVLK:  {gblk_key}\n\n"
+            "AVISO: Esta ação troca a edição (Pro ↔ Education ↔ Enterprise).\n"
+            "Não atualiza a versão do OS (Windows 10 ↔ Windows 11).\n\n"
+            "Prosseguir?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
 
         try:
             ps_script = load_ps_template(
