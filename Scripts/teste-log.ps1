@@ -1,0 +1,1 @@
+function Get-Log { Get-Content .\data\logs\sarcc.log -Tail 30 -Encoding UTF8 }
