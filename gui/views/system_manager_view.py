@@ -9,8 +9,8 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from core.remote_connection import RemoteConnectionManager
 from core.database import DatabaseManager
+from core.ps_loader import load_ps_template, PsTemplateError
 from gui.views.base_view import BaseView
-from PyQt6.QtWidgets import QDialog, QTextEdit
 
 class EventDetailDialog(QDialog):
     """Dialog para exibir detalhes completos de um evento (resumo ou tabela principal)."""
@@ -115,129 +115,63 @@ class SysManagerWorker(QThread):
         self.action_type = action_type
         self.extra_params = extra_params or {}
 
-    def run(self):
-        conn = RemoteConnectionManager()
-        ps_script = ""
+    def _build_script(self) -> str:
+        """Carrega e renderiza o template PS correspondente à ação.
 
+        Levanta PsTemplateError se o template não existir — capturado pelo
+        run() e reportado como erro de UI.
+        """
         if self.action_type == "get_processes":
-            ps_script = """
-            $p = Get-Process | Select-Object Id, ProcessName, @{Name='MemoryMB';Expression={[math]::Round($_.WorkingSet / 1MB, 2)}}, @{Name='CPU';Expression={[math]::Round($_.CPU, 2)}}
-            @{ Data = @($p) } | ConvertTo-Json -Depth 3 -Compress | Write-Output
-            """
-        elif self.action_type == "kill_process":
-            pid = self.extra_params.get("pid")
-            nome = self.extra_params.get("name", "Desconhecido")
-            ps_script = f"""
-            $LogData = @{{
-                Script = "Ação de Processo (Kill)"
-                Inicio = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-                Computador = $env:COMPUTERNAME
-                StatusFinal = "SUCESSO"
-                Detalhes = @("Alvo: Processo '{nome}' (PID: {pid})", "Comando executado: Stop-Process -Id {pid} -Force")
-                Mensagem = "O processo '{nome}' (PID: {pid}) foi encerrado com sucesso à força."
-            }}
-            try {{
-                Stop-Process -Id {pid} -Force -ErrorAction Stop
-                @{{ Data = @($LogData) }} | ConvertTo-Json -Depth 4 -Compress | Write-Output
-            }} catch {{
-                $LogData.StatusFinal = "ERRO"
-                $LogData.Mensagem = "Falha ao encerrar processo '{nome}' (PID {pid}): $($_.Exception.Message)"
-                @{{ Data = @($LogData) }} | ConvertTo-Json -Depth 4 -Compress | Write-Output
-            }}
-            """
-            
-        elif self.action_type == "get_services":
-            ps_script = """
-            $s = Get-Service | Select-Object Name, DisplayName, @{Name='Status';Expression={$_.Status.ToString()}}
-            @{ Data = @($s) } | ConvertTo-Json -Depth 3 -Compress | Write-Output
-            """
-            
-        elif self.action_type == "manage_service":
-            svc_name = self.extra_params.get("name")
+            return load_ps_template("system_manager", "get_processes")
+
+        if self.action_type == "kill_process":
+            return load_ps_template(
+                "system_manager", "kill_process",
+                pid=self.extra_params.get("pid"),
+                nome=self.extra_params.get("name", "Desconhecido"),
+            )
+
+        if self.action_type == "get_services":
+            return load_ps_template("system_manager", "get_services")
+
+        if self.action_type == "manage_service":
             action = self.extra_params.get("action")
             acao_pt = {"Start": "iniciado", "Stop": "parado", "Restart": "reiniciado"}.get(str(action), action)
-            ps_script = f"""
-            $LogData = @{{
-                Script = "Ação de Serviço ({action})"
-                Inicio = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-                Computador = $env:COMPUTERNAME
-                StatusFinal = "SUCESSO"
-                Detalhes = @("Alvo: Serviço '{svc_name}'", "Comando executado: {action}-Service -Name '{svc_name}' -Force")
-                Mensagem = "O serviço '{svc_name}' foi {acao_pt} com sucesso."
-            }}
-            try {{
-                {action}-Service -Name '{svc_name}' -Force -ErrorAction Stop
-                Start-Sleep -Seconds 2
-                $checkSvc = Get-Service -Name '{svc_name}' -ErrorAction SilentlyContinue
-                $LogData.Detalhes += "Status atual após comando: $($checkSvc.Status)"
-                @{{ Data = @($LogData) }} | ConvertTo-Json -Depth 4 -Compress | Write-Output
-            }} catch {{
-                $LogData.StatusFinal = "ERRO"
-                $LogData.Mensagem = "Falha na ação {action} do serviço '{svc_name}': $($_.Exception.Message)"
-                @{{ Data = @($LogData) }} | ConvertTo-Json -Depth 4 -Compress | Write-Output
-            }}
-            """
-        elif self.action_type == "get_critical_summary":
-            ps_script = """
-            $ErrorActionPreference = 'SilentlyContinue'
-            $result = @()
+            return load_ps_template(
+                "system_manager", "manage_service",
+                svc_name=self.extra_params.get("name"),
+                action=action,
+                acao_pt=acao_pt,
+            )
 
-            foreach ($logName in @('System', 'Application')) {
-                try {
-                    $events = Get-WinEvent -FilterHashtable @{LogName=$logName; Level=1,2} -MaxEvents 10 -ErrorAction Stop
-                    foreach ($e in $events) {
-                        $msg = if ($e.Message) {
-                            $m = $e.Message -replace "`r?`n", " "
-                            if ($m.Length -gt 200) { $m.Substring(0, 200) + "..." } else { $m }
-                        } else { "" }
-                        $result += [PSCustomObject]@{
-                            LogName = $logName
-                            ID = $e.Id
-                            Data = $e.TimeCreated.ToString('dd/MM HH:mm:ss')
-                            Nivel = $e.LevelDisplayName
-                            Fonte = $e.ProviderName
-                            Mensagem = $msg
-                            TimeCreated = $e.TimeCreated
-                        }
-                    }
-                } catch { }
-            }
+        if self.action_type == "get_critical_summary":
+            return load_ps_template("system_manager", "get_critical_summary")
 
-            $top5 = $result | Sort-Object TimeCreated -Descending | Select-Object -First 5
+        if self.action_type == "get_events":
+            return load_ps_template(
+                "system_manager", "get_events",
+                log_name=self.extra_params.get("log_name", "System"),
+                level=self.extra_params.get("level", "1,2"),
+                max_events=self.extra_params.get("max", 50),
+            )
 
-            @{ Data = @($top5) } | ConvertTo-Json -Depth 4 -Compress
-            """
+        raise PsTemplateError(f"action_type desconhecido: {self.action_type}")
 
+    def run(self):
+        try:
+            ps_script = self._build_script()
+        except PsTemplateError as e:
+            # Erro de programação (template ausente) — reporta e não tenta conexão
+            self.error.emit(f"Erro de configuração interna: {e}")
+            return
 
-        elif self.action_type == "get_events":
-            log_name = self.extra_params.get("log_name", "System")
-            level = self.extra_params.get("level", "1,2") 
-            max_events = self.extra_params.get("max", 50)
-            ps_script = f"""
-            try {{
-                $events = Get-WinEvent -FilterHashtable @{{LogName='{log_name}'; Level={level}}} -MaxEvents {max_events} -ErrorAction Stop
-                $res = @()
-                foreach ($e in $events) {{
-                    $res += [PSCustomObject]@{{
-                        ID = $e.Id
-                        Data = $e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')
-                        Nivel = $e.LevelDisplayName
-                        Fonte = $e.ProviderName
-                        Mensagem = $e.Message
-                    }}
-                }}
-                @{{ Data = $res }} | ConvertTo-Json -Depth 4 -Compress | Write-Output
-            }} catch {{
-                @{{ Data = @(@{{ Erro = $($_.Exception.Message) }}) }} | ConvertTo-Json -Depth 3 -Compress | Write-Output
-            }}
-            """
-
+        conn = RemoteConnectionManager()
         try:
             res = conn.execute_script(self.target_pc, ps_script)
-            
+
             if res["status"] == "Sucesso":
                 json_data = res.get("json_data", {})
-                
+
                 if "Data" in json_data:
                     parsed_data = json_data["Data"]
                     if not isinstance(parsed_data, list):
