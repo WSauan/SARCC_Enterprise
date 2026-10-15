@@ -18,10 +18,10 @@ import sys
 from logging.handlers import RotatingFileHandler
 
 
-# Diretório base do projeto (core/logger.py → ../../)
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_LOG_DIR = os.path.join(_BASE_DIR, "data", "logs")
-_LOG_FILE = os.path.join(_LOG_DIR, "sarcc.log")
+from core.config import get_logs_dir
+
+_LOG_DIR = get_logs_dir()
+_LOG_FILE = _LOG_DIR / "sarcc.log"
 
 _configured = False
 
@@ -32,7 +32,7 @@ def _configure_root_logger():
     if _configured:
         return
 
-    os.makedirs(_LOG_DIR, exist_ok=True)
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     root = logging.getLogger("sarcc")
     root.setLevel(logging.DEBUG)

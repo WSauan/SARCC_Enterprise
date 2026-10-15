@@ -3,9 +3,25 @@ import os
 from datetime import datetime, timedelta
 
 class DatabaseManager:
-    def __init__(self, db_path="data/sarcc.db"):
-        self.db_path = db_path
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+    def __init__(self, db_path=None):
+        """
+        Args:
+            db_path: caminho do arquivo SQLite. Se None, usa o padrão
+                    (definido por core.config.get_db_path()).
+                    Aceita str ou Path.
+        """
+        if db_path is None:
+            from core.config import get_db_path
+            db_path = get_db_path()
+
+        self.db_path = str(db_path)
+
+        # Garante que o diretório-pai existe (evita makedirs("") quando
+        # db_path é um nome simples tipo "sarcc.db").
+        parent = os.path.dirname(self.db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
         self._initialize_db()
         self._auto_cleanup()
 

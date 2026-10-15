@@ -11,6 +11,11 @@ log = get_logger(__name__)
 
 
 def main():
+    # Garante que os diretórios graváveis existem ANTES de qualquer
+    # import de logger/database que possa falhar.
+    from core.config import ensure_dirs
+    ensure_dirs()
+
     app = QApplication(sys.argv)
 
     # --- Ícone da janela + taskbar ---
