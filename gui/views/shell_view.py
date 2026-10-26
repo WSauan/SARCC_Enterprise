@@ -1,3 +1,4 @@
+import base64
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QPushButton, QTextEdit, QGroupBox, 
                              QMessageBox, QComboBox)
@@ -5,13 +6,10 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
 
 from core.remote_connection import RemoteConnectionManager
+from core.ps_loader import load_ps_template, PsTemplateError
 from gui.views.base_view import BaseView
 
-
-# ---------------------------------------------------------------------------
 # Catálogo de atalhos de diagnóstico de rede
-# {target} é substituído automaticamente pelo valor do campo "Computador Alvo"
-# ---------------------------------------------------------------------------
 NETWORK_SHORTCUTS = [
     ("Ping Rápido (4 pacotes)",           "ping -n 4 8.8.8.8"),
     ("Ping Contínuo (30 pacotes)",        "ping -n 30 8.8.8.8"),
@@ -32,7 +30,6 @@ NETWORK_SHORTCUTS = [
     ("Firewall (Perfis)",                  "Get-NetFirewallProfile | Format-Table Name, Enabled, DefaultInboundAction -AutoSize"),
 ]
 
-
 class ShellWorker(QThread):
     finished = pyqtSignal(str)
 
@@ -43,41 +40,30 @@ class ShellWorker(QThread):
 
     def run(self):
         try:
+            # Codifica o comando em base64 para injetar de forma segura
+            cmd_b64 = base64.b64encode(self.command.encode('utf-8')).decode('ascii')
+            
+            try:
+                ps_script = load_ps_template("shell", "run_command", command_b64=cmd_b64)
+            except PsTemplateError as e:
+                self.finished.emit(f"[ERRO INTERNO] Falha ao carregar template: {e}")
+                return
+
             conn = RemoteConnectionManager()
-            
-            ps_script = f"""
-            $OutputEncoding = [System.Text.Encoding]::UTF8
-            [System.Console]::InputEncoding = [System.Text.Encoding]::UTF8
-
-            # Comandos nativos do Windows (ping.exe, ipconfig, tracert, arp,
-            # netstat, nslookup, route) escrevem em CP850/CP437 (ANSI/OEM do
-            # sistema), NÃO em UTF-8, mesmo com chcp 65001.
-            # Setamos o Console::OutputEncoding para a OEM CP do sistema para
-            # que o PowerShell decodifique corretamente.
-            try {{
-                $oemCP = [System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage
-                [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding($oemCP)
-            }} catch {{
-                [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(850)
-            }}
-
-            {self.command} | Out-String
-            """
-            
             res = conn.execute_script(self.target_pc, ps_script)
             
             saida = res.get("log_saida", "").strip()
             
-            if not saida and res["status"] == "Sucesso":
+            if "SARCC_SHELL_ERROR:" in saida:
+                saida = f"[ERRO DE EXECUÇÃO NO POWERSHELL]\n{saida.replace('SARCC_SHELL_ERROR:', '').strip()}"
+            elif not saida and res["status"] == "Sucesso":
                 saida = "[Comando executado com sucesso sem retorno visual]"
-                
-            if res["status"] != "Sucesso":
-                saida = f"[ERRO DE EXECUÇÃO]\n{saida}"
+            elif res["status"] != "Sucesso":
+                saida = f"[ERRO DE CONEXÃO]\n{saida}"
 
             self.finished.emit(saida)
         except Exception as e:
-            self.finished.emit(f"[FALHA CRÍTICA DE CONEXÃO]\n{str(e)}")
-
+            self.finished.emit(f"[FALHA CRÍTICA]\n{str(e)}")
 
 class ShellView(BaseView):
     def __init__(self, main_window_ref=None):
@@ -93,7 +79,6 @@ class ShellView(BaseView):
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #4a90e2;")
         layout.addWidget(title)
 
-        # --- GRUPO 1: SESSÃO ---
         conn_group = QGroupBox("1. Estabelecer Sessão")
         conn_layout = QHBoxLayout()
         conn_layout.setContentsMargins(15, 20, 15, 15)
@@ -110,7 +95,6 @@ class ShellView(BaseView):
         conn_group.setLayout(conn_layout)
         layout.addWidget(conn_group)
 
-        # --- GRUPO 2: ATALHOS DE DIAGNÓSTICO ---
         shortcut_group = QGroupBox("2. ⚡ Atalhos de Diagnóstico de Rede")
         shortcut_layout = QHBoxLayout(shortcut_group)
         shortcut_layout.setContentsMargins(15, 20, 15, 15)
@@ -137,7 +121,6 @@ class ShellView(BaseView):
 
         layout.addWidget(shortcut_group)
 
-        # --- GRUPO 3: CONSOLE ---
         console_group = QGroupBox("3. Console de Saída")
         console_layout = QVBoxLayout(console_group)
         console_layout.setContentsMargins(15, 20, 15, 15)
@@ -148,16 +131,15 @@ class ShellView(BaseView):
         self.txt_console.setFont(font)
         self.txt_console.setStyleSheet(
             "font-family: Consolas, monospace; padding: 10px; "
-            "background-color: #121212; border: 1px solid #444; border-radius: 4px;"
+            "background-color: #121212; color: #e0e0e0; border: 1px solid #444; border-radius: 4px;"
         )
         self.txt_console.setPlainText(
-            "SARCC PowerShell Remote Host v2.0\n"
+            "SARCC PowerShell Remote Host\n"
             "Digite um comando abaixo ou escolha um atalho de diagnóstico para iniciar...\n"
         )
         console_layout.addWidget(self.txt_console)
         layout.addWidget(console_group, stretch=1)
 
-        # --- LINHA DE INPUT ---
         input_layout = QHBoxLayout()
         input_layout.setSpacing(10)
         
@@ -172,11 +154,9 @@ class ShellView(BaseView):
         self.inp_command.setFont(font)
         self.inp_command.setStyleSheet(
             "padding: 0 10px; border: 1px solid #444; "
-            "border-radius: 4px; background-color: #121212;"
+            "border-radius: 4px; background-color: #121212; color: #e0e0e0;"
         )
-        self.inp_command.setPlaceholderText(
-            "Digite um comando (ex: Get-Process, ipconfig) e pressione Enter..."
-        )
+        self.inp_command.setPlaceholderText("Digite um comando (ex: Get-Process, ipconfig) e pressione Enter...")
         self.inp_command.returnPressed.connect(self.execute_command)
         input_layout.addWidget(self.inp_command)
         
@@ -198,14 +178,13 @@ class ShellView(BaseView):
             "font-weight: bold; border-radius: 4px;"
         )
         self.btn_clear.clicked.connect(
-            lambda: self.txt_console.setPlainText("SARCC PowerShell Remote Host v2.0\n")
+            lambda: self.txt_console.setPlainText("SARCC PowerShell Remote Host\n")
         )
         input_layout.addWidget(self.btn_clear)
 
         layout.addLayout(input_layout)
 
     def run_shortcut(self):
-        """Injeta o comando do atalho selecionado no input e executa."""
         target = self.inp_target.text().strip()
         if not target:
             QMessageBox.warning(self, "Aviso", "Informe o computador alvo antes de executar um atalho.")
@@ -217,10 +196,7 @@ class ShellView(BaseView):
             QMessageBox.information(self, "Atalho", "Selecione um atalho na lista antes de executar.")
             return
 
-        # Substitui {target} pelo alvo informado (quando o comando usa esse placeholder)
         comando = cmd_template.replace("{target}", target)
-
-        # Coloca no campo e dispara o fluxo normal (transparência: usuário vê o que rodou)
         self.inp_command.setText(comando)
         self.execute_command()
 
@@ -276,9 +252,7 @@ class ShellView(BaseView):
         self.inp_command.setEnabled(True)
         self.btn_send.setEnabled(True)
         self.btn_run_shortcut.setEnabled(True)
-        self.inp_command.setPlaceholderText(
-            "Digite um comando (ex: Get-Process, ipconfig) e pressione Enter..."
-        )
+        self.inp_command.setPlaceholderText("Digite um comando (ex: Get-Process, ipconfig) e pressione Enter...")
         self.inp_command.setFocus()
 
     def showEvent(self, event):

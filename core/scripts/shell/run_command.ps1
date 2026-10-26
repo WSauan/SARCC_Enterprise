@@ -1,13 +1,14 @@
-# Executa um comando PowerShell no alvo e devolve a saída como texto puro.
-# Variável: {{command}}
+<#
+.SYNOPSIS
+    Motor de execução do Terminal Interativo (Shell Remoto).
+#>
+$ErrorActionPreference = 'Continue'
 
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [System.Console]::InputEncoding = [System.Text.Encoding]::UTF8
 
-# Comandos nativos do Windows (ping.exe, ipconfig, tracert, arp, netstat,
-# nslookup, route) escrevem em CP850/CP437 (ANSI/OEM do sistema), NÃO em
-# UTF-8, mesmo com chcp 65001. Setamos o Console::OutputEncoding para a
-# OEM CP do sistema para que o PowerShell decodifique corretamente.
+# Comandos nativos do Windows escrevem na Code Page OEM do sistema, não em UTF-8.
+# Forçar a leitura da Code Page correta evita quebras de acentuação no retorno.
 try {
     $oemCP = [System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage
     [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding($oemCP)
@@ -15,4 +16,14 @@ try {
     [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(850)
 }
 
-{{command}} | Out-String
+$CmdB64 = "{{command_b64}}"
+
+try {
+    $bytes = [System.Convert]::FromBase64String($CmdB64)
+    $CmdDecoded = [System.Text.Encoding]::UTF8.GetString($bytes)
+    
+    # Executa o comando arbitrário e converte a saída estruturada para texto puro
+    Invoke-Expression $CmdDecoded | Out-String
+} catch {
+    Write-Output "SARCC_SHELL_ERROR: $($_.Exception.Message)"
+}
