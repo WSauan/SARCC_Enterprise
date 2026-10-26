@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import QDialog  # (já existe no import? confirme)
-from gui.dialogs import CredentialDialog
+from gui.dialogs.dialogs import CredentialDialog
 from core.credential_store import CredentialStore
 from core.task_queue import TaskQueueManager
 from core.database import DatabaseManager

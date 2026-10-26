@@ -1,5 +1,5 @@
 {
     "files.associations": {
-        "**/ps_scripts/**/*.ps1": "plaintext"
+        "**/scripts/**/*.ps1": "plaintext"
     }
 }

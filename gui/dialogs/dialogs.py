@@ -20,7 +20,12 @@ class CredentialDialog(QDialog):
         self.remember = has_saved
 
         self._setup_ui(user_display, has_saved)
-
+    
+    def _toggle_password_visibility(self, checked: bool):
+        self.inp_password.setEchoMode(
+            QLineEdit.EchoMode.Normal if checked
+            else QLineEdit.EchoMode.Password
+        )
     def _setup_ui(self, user_display: str, has_saved: bool):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -37,12 +42,35 @@ class CredentialDialog(QDialog):
         info.setWordWrap(True)
         layout.addWidget(info)
 
+        # Container com olho embutido: QLineEdit + botão de toggle
+        pwd_row = QHBoxLayout()
+        pwd_row.setSpacing(6)
+
         self.inp_password = QLineEdit()
         self.inp_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.inp_password.setFixedHeight(32)
         self.inp_password.setPlaceholderText("Senha do AD")
         self.inp_password.setStyleSheet("padding: 0 10px;")
-        layout.addWidget(self.inp_password)
+
+        self.btn_toggle_pwd = QPushButton("👁")
+        self.btn_toggle_pwd.setFixedSize(36, 32)
+        self.btn_toggle_pwd.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_pwd.setToolTip("Mostrar / ocultar senha")
+        self.btn_toggle_pwd.setCheckable(True)
+        self.btn_toggle_pwd.setStyleSheet(
+            "QPushButton { background: transparent; border: 1px solid #666; "
+            "border-radius: 4px; font-size: 14px; } "
+            "QPushButton:checked { background: #4a90e2; color: white; }"
+        )
+        self.btn_toggle_pwd.toggled.connect(
+            lambda on: self.inp_password.setEchoMode(
+                QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
+            )
+        )
+
+        pwd_row.addWidget(self.inp_password, stretch=1)
+        pwd_row.addWidget(self.btn_toggle_pwd)
+        layout.addLayout(pwd_row)
 
         self.chk_remember = QCheckBox(
             "💾 Lembrar senha entre sessões (criptografada com DPAPI)"

@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QSizePolicy, QFileDialog, QAbstractItemView)
 from PyQt6.QtCore import Qt, QRegularExpression
 from PyQt6.QtGui import QFont, QSyntaxHighlighter, QTextCharFormat, QColor
-from gui.code_editor import CodeEditorWidget
+from gui.widgets.code_editor import CodeEditorWidget
 from core.database import DatabaseManager
 from core.logger import get_logger
 

@@ -31,33 +31,22 @@ class TaskWorker(threading.Thread):
                 
             target_pc, script_name, script_content, module_name, credentials, signals = task
             conn = RemoteConnectionManager()
-            
-            # --- CAPTURA O TÉCNICO EXECUTOR ---
-            # Pega o usuário que abriu o aplicativo (Ex: adm.wsauan)
             executor = os.environ.get("USERNAME", "Desconhecido")
             
-            # --- PROTEÇÃO DE CREDENCIAIS (INJEÇÃO EM TEMPO DE EXECUÇÃO) ---
-            # Placeholders canônicos: [[ADMIN_USER]], [[ADMIN_PASS]], [[VNC_PASS]]
-            #
-            # Regra:
-            #   - Se credentials foi passado → substitui pelos valores reais
-            #   - Se NÃO foi passado → DEIXA os placeholders literais no script.
-            #     Isso é intencional: o script remoto detecta "[[" no valor e
-            #     cai em modo conta-máquina (System), usado pelo SchedulerView.
-            #
-            # Fallback antigo via env vars foi removido — quem precisar, passa
-            # o dict credentials.
-            if credentials:
-                # Codifica credenciais em Base64 — elimina qualquer problema
-                # com caracteres especiais na senha ($, ", ', `, espaço, etc.).
-                # O script PowerShell decodifica em runtime.
+            if credentials and isinstance(credentials, dict):
                 def _b64(s: str) -> str:
-                    return b64.b64encode((s or "").encode("utf-8")).decode("ascii")
+                    return b64.b64encode((s or "").encode("utf-8")).decode("ascii").replace('\n', '')
 
-                script_content = script_content.replace("[[ADMIN_USER]]", _b64(credentials.get("user", "")))
-                script_content = script_content.replace("[[ADMIN_PASS]]", _b64(credentials.get("pass", "")))
-                script_content = script_content.replace("[[VNC_PASS]]", _b64(credentials.get("vnc_pass", "")))
-            # else: placeholders ficam literais → script detecta modo conta-máquina
+                user_b64 = _b64(credentials.get("user", ""))
+                pass_b64 = _b64(credentials.get("pass", ""))
+                vnc_b64 = _b64(credentials.get("vnc_pass", ""))
+
+                script_content = script_content.replace("[[ADMIN_USER]]", user_b64)
+                script_content = script_content.replace("[[ADMIN_PASS]]", pass_b64)
+                script_content = script_content.replace("[[VNC_PASS]]", vnc_b64)
+                log.debug(f"[{target_pc}] Credenciais Base64 injetadas no script com sucesso.")
+            else:
+                log.debug(f"[{target_pc}] Sem credenciais fornecidas. Placeholders mantidos.")
             
             signals.started.emit(target_pc)
             
@@ -70,7 +59,6 @@ class TaskWorker(threading.Thread):
                 if status == "Sucesso" and "StatusFinal" in json_data:
                     status = json_data["StatusFinal"]
                     
-                # Grava no banco com o Técnico e a Tela
                 self.db.save_execution(target_pc, script_name, status, raw_data, technician=executor, module=module_name)
                 
                 if status.upper() in ["SUCESSO", "ALERTA", "ALERTA/ERRO"]:
@@ -80,10 +68,7 @@ class TaskWorker(threading.Thread):
                     signals.error.emit(target_pc, str(error_msg))
                     
             except Exception as e:
-                log.error(
-                    f"Worker falhou em '{script_name}' → {target_pc}: {e}",
-                    exc_info=True,
-                )
+                log.error(f"Worker falhou em '{script_name}' → {target_pc}: {e}", exc_info=True)
                 error_json = json.dumps({"Erro": str(e), "StatusFinal": "ERRO FATAL"})
                 self.db.save_execution(target_pc, script_name, "ERRO FATAL", error_json, technician=executor, module=module_name)
                 signals.error.emit(target_pc, str(e))
@@ -95,39 +80,23 @@ class TaskQueueManager:
         self.task_queue = queue.Queue()
         self.db = DatabaseManager()
         self.workers = []
-        
         for _ in range(max_threads):
             worker = TaskWorker(self.task_queue, self.db)
             worker.start()
             self.workers.append(worker)
 
-    # Atualizado para receber o nome da tela/módulo
     def add_task(self, target_pc, script_name, script_content, module_name="Execução Remota",
                  credentials=None, on_start=None, on_finish=None, on_error=None):
-        """Enfileira uma execução remota.
-
-        Args:
-            credentials: dict opcional com chaves 'user', 'pass', 'vnc_pass'.
-                         Quando presente, substitui os placeholders
-                         [[ADMIN_USER]], [[ADMIN_PASS]], [[VNC_PASS]]
-                         no script antes de enviá-lo ao alvo.
-        """
         signals = WorkerSignals()
         if on_start: signals.started.connect(on_start)
         if on_finish: signals.finished.connect(on_finish)
         if on_error: signals.error.connect(on_error)
-            
         self.task_queue.put((target_pc, script_name, script_content, module_name, credentials, signals))
 
     def shutdown(self, timeout: float = 2.0):
-        """Encerra todos os workers graciosamente.
-
-        Envia `None` para cada worker (sinal de parada) e aguarda até `timeout`
-        segundos para cada um. Chamado no fechamento da aplicação.
-        """
         log.info(f"TaskQueueManager: encerrando {len(self.workers)} worker(s)...")
         for _ in self.workers:
-            self.task_queue.put(None)  # sinal de "pare"
+            self.task_queue.put(None)
         for w in self.workers:
             w.join(timeout=timeout)
         log.info("TaskQueueManager: workers encerrados.")

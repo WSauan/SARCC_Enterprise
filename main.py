@@ -9,7 +9,6 @@ from core.resources import resource_path
 
 log = get_logger(__name__)
 
-
 def main():
     # Garante que os diretórios graváveis existem ANTES de qualquer
     # import de logger/database que possa falhar.
@@ -27,19 +26,19 @@ def main():
         log.warning(f"Ícone não encontrado em {icon_path} — usando padrão do Qt")
 
     log.info("=" * 60)
-    log.info("SARCC v2.0 — Iniciando aplicação")
+    log.info("SARCC Enterprise v2.7.0 — Iniciando aplicação")
     log.info("=" * 60)
 
+    # Aplica o tema escuro moderno
     app.setStyleSheet(qdarktheme.load_stylesheet("dark"))
 
     window = MainWindow()
     window.show()
 
     exit_code = app.exec()
-    log.info("SARCC v2.0 — Encerrando aplicação")
+    log.info("SARCC Enterprise v2.7.0 — Encerrando aplicação")
     log.info("=" * 60)
     sys.exit(exit_code)
-
 
 if __name__ == "__main__":
     main()

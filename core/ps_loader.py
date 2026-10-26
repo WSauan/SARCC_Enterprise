@@ -1,70 +1,33 @@
-"""
-Loader de templates PowerShell.
-
-Estrutura:
-    ps_scripts/<namespace>/<nome>.ps1
-
-Os .ps1 são recursos read-only do bundle. São carregados em runtime e têm
-placeholders {{VAR}} substituídos pelos valores passados.
-
-POR QUE {{VAR}} E NÃO str.format()?
-────────────────────────────────────
-PowerShell usa { e } intensamente: blocos (if {}), hashtables (@{...}),
-scriptblocks ({ $_ }). Se usássemos str.format(), TODA chave teria que ser
-escrita como {{ e }} nos .ps1 — ilegível e frágil.
-
-O delimitador {{VAR}} (duplo) é substituído literalmente por str.replace()
-sem nenhuma mágica. Chaves simples { } do PowerShell ficam intactas.
-
-EXEMPLO:
-    template  →  "Stop-Process -Id {{pid}} -Force"
-    chamada   →  load_ps_template("ns", "kill", pid=1234)
-    resultado →  "Stop-Process -Id 1234 -Force"
-"""
-
-from __future__ import annotations
-
+import os
 from pathlib import Path
 from typing import Any
-
+from core.logger import get_logger
 from core.config import get_ps_scripts_dir
 
+log = get_logger(__name__)
 
 class PsTemplateError(Exception):
-    """Falha ao carregar ou renderizar um template PowerShell."""
+    pass
 
-
-def load_ps_template(namespace: str, name: str, **variables: Any) -> str:
-    """
-    Carrega e renderiza um script PowerShell.
-
-    Args:
-        namespace: subpasta em ps_scripts/ (ex: "system_manager").
-        name:      nome do arquivo SEM extensão (ex: "kill_process").
-        **variables: pares chave/valor substituídos em {{chave}}.
-
-    Returns:
-        Conteúdo do script com os placeholders substituídos.
-
-    Raises:
-        PsTemplateError: se o arquivo não existir ou não puder ser lido.
-
-    Exemplo:
-        script = load_ps_template(
-            "system_manager", "kill_process",
-            pid=1234, nome="notepad",
-        )
-    """
-    path = get_ps_scripts_dir() / namespace / f"{name}.ps1"
-    if not path.exists():
-        raise PsTemplateError(f"Template PowerShell não encontrado: {path}")
-
+def load_ps_template(category: str, template_name: str, **kwargs) -> str:
+    base_dir = get_ps_scripts_dir()
+    script_path = base_dir / category / f"{template_name}.ps1"
+    
+    if not script_path.exists():
+        error_msg = f"Ficheiro não encontrado: {script_path}"
+        log.error(error_msg)
+        raise PsTemplateError(error_msg)
+        
     try:
-        template = path.read_text(encoding="utf-8")
-    except OSError as e:
-        raise PsTemplateError(f"Falha ao ler {path}: {e}") from e
-
-    for key, value in variables.items():
-        template = template.replace("{{" + key + "}}", str(value))
-
-    return template
+        content = script_path.read_text(encoding='utf-8')
+        for key, value in kwargs.items():
+            placeholder = f"{{{{{key}}}}}"
+            if isinstance(value, bool):
+                val_str = "$true" if value else "$false"
+            else:
+                val_str = str(value)
+            content = content.replace(placeholder, val_str)
+        return content
+    except Exception as e:
+        log.error(f"Falha ao processar o template {script_path}: {e}", exc_info=True)
+        raise PsTemplateError(f"Falha ao ler o ficheiro: {e}")
