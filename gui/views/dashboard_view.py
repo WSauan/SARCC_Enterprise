@@ -16,6 +16,26 @@ from core.database import DatabaseManager
 from core.ps_loader import load_ps_template, PsTemplateError
 from gui.views.base_view import BaseView
 
+
+def _format_last_use(dt_str: str) -> str:
+    """Converte 'YYYY-MM-DD HH:MM' em texto relativo amigável."""
+    if not dt_str or dt_str == "N/A":
+        return "N/A"
+    try:
+        dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return dt_str
+
+    delta = datetime.now() - dt
+    if delta.days == 0:
+        return f"Hoje {dt.strftime('%H:%M')}"
+    if delta.days == 1:
+        return f"Ontem {dt.strftime('%H:%M')}"
+    if delta.days < 7:
+        return f"{delta.days} dias atrás"
+    return dt.strftime("%d/%m/%Y")
+
+
 class ProfilesDialog(QDialog):
     """Lista completa de perfis de usuário do endpoint alvo."""
 
@@ -42,8 +62,10 @@ class ProfilesDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSortingEnabled(True)
         self.table.verticalHeader().setVisible(False)
+        
+        # Desligar a ordenação ANTES de preencher a tabela
+        self.table.setSortingEnabled(False)
 
         # Ordena: logados primeiro, depois por último acesso mais recente
         def sort_key(p):
@@ -68,6 +90,9 @@ class ProfilesDialog(QDialog):
                 status_item.setForeground(Qt.GlobalColor.green)
             self.table.setItem(row, 2, status_item)
 
+        # Ligar a ordenação APENAS DEPOIS de preencher tudo
+        self.table.setSortingEnabled(True)
+
         layout.addWidget(self.table)
 
         btn_close = QPushButton("Fechar")
@@ -84,24 +109,6 @@ class ProfilesDialog(QDialog):
         btn_layout.addWidget(btn_close)
         layout.addLayout(btn_layout)
 
-
-def _format_last_use(dt_str: str) -> str:
-    """Converte 'YYYY-MM-DD HH:MM' em texto relativo amigável."""
-    if not dt_str or dt_str == "N/A":
-        return "N/A"
-    try:
-        dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
-    except (ValueError, TypeError):
-        return dt_str
-
-    delta = datetime.now() - dt
-    if delta.days == 0:
-        return f"Hoje {dt.strftime('%H:%M')}"
-    if delta.days == 1:
-        return f"Ontem {dt.strftime('%H:%M')}"
-    if delta.days < 7:
-        return f"{delta.days} dias atrás"
-    return dt.strftime("%d/%m/%Y")
 
 class PingTrackerWorker(QThread):
     success = pyqtSignal(str)
@@ -120,6 +127,7 @@ class PingTrackerWorker(QThread):
             time.sleep(5)
         self.timeout.emit(self.target_pc)
 
+
 class TelemetryWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
@@ -127,17 +135,22 @@ class TelemetryWorker(QThread):
     def __init__(self, target_pc):
         super().__init__()
         self.target_pc = target_pc
+        self.is_cancelled = False
 
     def run(self):
         try:
             try:
                 ps_script = load_ps_template("dashboard", "telemetry")
             except PsTemplateError as e:
-                self.error.emit(f"Erro de configuração interna: {e}")
+                if not self.is_cancelled:
+                    self.error.emit(f"Erro de configuração interna: {e}")
                 return
 
             conn = RemoteConnectionManager()
             res = conn.execute_script(self.target_pc, ps_script)
+            
+            if self.is_cancelled:
+                return
 
             if res["status"] == "Sucesso" and res.get("json_data"):
                 self.finished.emit(res["json_data"])
@@ -146,13 +159,16 @@ class TelemetryWorker(QThread):
             else:
                 self.error.emit(res.get("log_saida", "Erro crítico na coleta."))
         except Exception as e:
-            self.error.emit(str(e))
+            if not self.is_cancelled:
+                self.error.emit(str(e))
+
 
 class DashboardView(BaseView):
     def __init__(self, main_window_ref=None):
         super().__init__(main_window_ref)
         self.queue_manager = getattr(main_window_ref, 'queue_manager', None) or TaskQueueManager(max_threads=5)
         self.db = DatabaseManager()
+        self.is_fetching = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -277,7 +293,6 @@ class DashboardView(BaseView):
         self.lbl_winget = QLabel("Winget: -")
         self.lbl_reboot = QLabel("Reboot: -")
 
-        # Permite selecionar e copiar texto (Ctrl+C) em todos os rótulos de informação
         for lbl in [self.lbl_hostname, self.lbl_os, self.lbl_uptime, self.lbl_ip, self.lbl_mac, 
                     self.lbl_av, self.lbl_rdp, self.lbl_vnc, self.lbl_anydesk, self.lbl_wol, 
                     self.lbl_zabbix, self.lbl_glpi, self.lbl_desktopinfo, self.lbl_winget, self.lbl_reboot]:
@@ -303,13 +318,11 @@ class DashboardView(BaseView):
         sys_layout.addLayout(sys_grid)
         grid_cards.addWidget(self.card_sys, 0, 0)
 
-        # ── Card de Perfis (contadores + lista dos 5 mais relevantes) ────────
         self.card_profiles = QGroupBox("👥 Sessões e Perfis de Usuários")
         p_layout = QVBoxLayout(self.card_profiles)
         p_layout.setContentsMargins(15, 20, 15, 15)
         p_layout.setSpacing(10)
 
-        # Linha 1: contadores lado a lado
         counters = QHBoxLayout()
         counters.setSpacing(20)
 
@@ -331,7 +344,6 @@ class DashboardView(BaseView):
         counters.addLayout(v_log)
         p_layout.addLayout(counters)
 
-        # Linha 2: tabela compacta (5 linhas visíveis)
         self.tbl_profiles = QTableWidget(0, 3)
         self.tbl_profiles.setHorizontalHeaderLabels(["Usuário", "Último Acesso", "Status"])
         self.tbl_profiles.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -342,13 +354,11 @@ class DashboardView(BaseView):
         self.tbl_profiles.verticalHeader().setVisible(False)
         self.tbl_profiles.setShowGrid(False)
         self.tbl_profiles.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        # Altura: cabeçalho + 5 linhas. Ajustável.
         header_h = self.tbl_profiles.horizontalHeader().height()
         row_h = 24
         self.tbl_profiles.setFixedHeight(header_h + (row_h * 5) + 4)
         p_layout.addWidget(self.tbl_profiles)
 
-        # Linha 3: botão "Ver todos (N)"
         self.btn_view_all_profiles = QPushButton("Ver todos")
         self.btn_view_all_profiles.setFixedHeight(26)
         self.btn_view_all_profiles.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -589,15 +599,11 @@ class DashboardView(BaseView):
             self.inp_target.setFocus()
             return
 
-        # Mapeamento ação → (rótulo PT-BR, nome do template .ps1)
-        # Cada ação tem seu próprio arquivo para evitar escapes complexos de
-        # aspas duplas em strings PS passadas como variável.
         acoes = {
             "restart":  ("Reiniciar",       "power_restart"),
             "shutdown": ("Desligar",        "power_shutdown"),
             "logoff":   ("Forçar Logoff",   "power_logoff"),
         }
-
         nome_acao, template_name = acoes[action_type]
 
         reply = QMessageBox.question(self, 'Confirmação Crítica',
@@ -625,14 +631,25 @@ class DashboardView(BaseView):
         QMessageBox.information(self, "Comando Despachado", f"O comando de {nome_acao} foi enfileirado para envio a {target}.\n\nVocê pode conferir o resultado final na aba Histórico de Logs.")
 
     def fetch_telemetry(self):
+        if getattr(self, 'is_fetching', False):
+            if hasattr(self, 'worker') and self.worker.isRunning():
+                self.worker.is_cancelled = True
+            
+            self._reset_fetch_button()
+            agora = datetime.now().strftime('%H:%M:%S')
+            self.lbl_last_sync.setText(f" Última atualização: Cancelado pelo usuário às {agora}")
+            return
+
         target = self.inp_target.text().strip()
         if not target:
             QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
             self.inp_target.setFocus()
             return
 
-        self.btn_fetch.setEnabled(False)
-        self.btn_fetch.setText("Coletando...")
+        self.is_fetching = True
+        self.btn_fetch.setText("⛔ Cancelar Coleta")
+        self.btn_fetch.setStyleSheet("background-color: #d9534f; color: white; padding: 0 15px; font-weight: bold; border-radius: 4px;")
+        
         agora = datetime.now().strftime('%H:%M:%S')
         self.lbl_last_sync.setText(f" Iniciado às: {agora}...")
 
@@ -641,9 +658,16 @@ class DashboardView(BaseView):
         self.worker.error.connect(self.show_telemetry_error)
         self.worker.start()
 
-    def update_telemetry_ui(self, data):
-        self.btn_fetch.setEnabled(True)
+    def _reset_fetch_button(self):
+        self.is_fetching = False
         self.btn_fetch.setText("🔄 Carregar Telemetria")
+        self.btn_fetch.setStyleSheet("background-color: #2a7de1; color: white; padding: 0 15px; font-weight: bold; border-radius: 4px;")
+
+    def update_telemetry_ui(self, data):
+        if getattr(self.worker, 'is_cancelled', False):
+            return
+            
+        self._reset_fetch_button()
         agora = datetime.now().strftime('%H:%M:%S')
         self.lbl_last_sync.setText(f" Última atualização: {agora}")
 
@@ -687,12 +711,10 @@ class DashboardView(BaseView):
         self.prog_ram.setFormat("%p%")
         self.lbl_ram_info.setText(f"RAM: Usando {usedRam} GB de {totalRam} GB")
 
-        # Perfis e sessões
         profiles_list = data.get("ProfilesList", [])
         if not isinstance(profiles_list, list):
             profiles_list = [profiles_list] if profiles_list else []
         logged_names = set(data.get("LoggedNames", []) or [])
-        # Guarda para o dialog "Ver todos"
         self._last_profiles_list = profiles_list
         self._last_logged_names = logged_names
 
@@ -784,21 +806,23 @@ class DashboardView(BaseView):
             )
 
     def show_telemetry_error(self, err):
-        self.btn_fetch.setEnabled(True)
-        self.btn_fetch.setText("🔄 Carregar Telemetria")
+        if getattr(self.worker, 'is_cancelled', False):
+            return
+            
+        self._reset_fetch_button()
         agora = datetime.now().strftime('%H:%M:%S')
         self.lbl_last_sync.setText(f" Última atualização: Falha às {agora}")
         QMessageBox.warning(self, "Aviso Operacional", f"{err}")
 
     def _populate_profiles_table(self, profiles: list, logged_names: set):
-        """Preenche a tabela compacta com os 5 perfis mais relevantes."""
         self.tbl_profiles.setRowCount(0)
 
         if not profiles:
             self.btn_view_all_profiles.setVisible(False)
             return
 
-        # Ordena: logados primeiro, depois por último acesso mais recente
+        self.tbl_profiles.setSortingEnabled(False)
+
         def sort_key(p):
             is_logged = p.get("Name", "") in logged_names
             return (not is_logged, p.get("LastUse", "") or "")
@@ -820,7 +844,8 @@ class DashboardView(BaseView):
                 status_item.setForeground(Qt.GlobalColor.green)
             self.tbl_profiles.setItem(row, 2, status_item)
 
-        # Botão "Ver todos" só aparece se houver mais que 5
+        self.tbl_profiles.setSortingEnabled(True)
+
         total = len(profiles)
         if total > 5:
             self.btn_view_all_profiles.setText(f"Ver todos ({total}) →")
@@ -829,7 +854,6 @@ class DashboardView(BaseView):
             self.btn_view_all_profiles.setVisible(False)
 
     def _open_profiles_dialog(self):
-        """Abre dialog com a lista completa de perfis."""
         profiles = getattr(self, "_last_profiles_list", [])
         logged_names = getattr(self, "_last_logged_names", set())
         target = self.inp_target.text().strip() or "N/A"

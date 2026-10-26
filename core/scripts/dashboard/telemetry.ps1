@@ -1,8 +1,8 @@
-# Telemetria completa do endpoint: OS, hardware, disco, sessões, agentes.
-# Sem variáveis — receita fixa que devolve um JSON grande.
-# O Python faz .get() em cada campo com valor default, então é seguro
-# omitir qualquer chave quando o sensor não suportar.
-
+<#
+.SYNOPSIS
+    Telemetria Ultra-Rápida para o Dashboard.
+    (Removido 'quser' para evitar lentidão e timeout na Sessão 0)
+#>
 $ErrorActionPreference = 'SilentlyContinue'
 
 # 1. Armazenamento
@@ -12,77 +12,54 @@ $used = if ($drive) { [math]::Round($drive.Used / 1GB, 2) } else { 0 }
 $total = [math]::Round($free + $used, 2)
 $pct = if ($total -gt 0) { [math]::Round(($used / $total) * 100, 1) } else { 0 }
 
-# 2. Perfis e Sessões
-#
-# Perfis: Win32_UserProfile (mais rico que listar C:\Users — traz LastUseTime
-# e flag Loaded). Filtra perfis especiais e contas de sistema.
+# 2. Perfis e Sessões (Reescrito para precisão e velocidade extrema)
 $profilesList = @()
-try {
-    $profilesRaw = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
-                   Where-Object {
-                       $_.Special -eq $false -and
-                       -not [string]::IsNullOrWhiteSpace($_.LocalPath) -and
-                       $_.LocalPath -notmatch 'Public|Público|Default|All Users|Usuário Padrão'
-                   }
-    foreach ($p in $profilesRaw) {
-        $name = Split-Path $p.LocalPath -Leaf
-        $lastUse = if ($p.LastUseTime) {
-            ([datetime]$p.LastUseTime).ToString('yyyy-MM-dd HH:mm')
-        } else { 'N/A' }
-        $profilesList += [PSCustomObject]@{
-            Name    = $name
-            LastUse = $lastUse
-            Loaded  = [bool]$p.Loaded
-        }
-    }
-} catch { }
-$profiles = $profilesList.Count
-
-# Usuários logados agora: quser (fonte canônica do Windows para sessões ativas).
 $loggedNames = @()
-$loggedUsers = 0
-try {
-    $q = quser 2>&1
-    $lines = $q -split '\r?\n' | Where-Object { $_.Trim() -ne '' }
-    if ($lines.Count -gt 1 -and $lines[0] -match 'USERNAME|USUÁRIO|NOME|ID') {
-        for ($i = 1; $i -lt $lines.Count; $i++) {
-            $parts = $lines[$i].Trim() -split '\s+'
-            if ($parts.Count -ge 1) {
-                $u = $parts[0].TrimStart('>')
-                if ($u) { $loggedNames += $u }
-            }
-        }
-        $loggedUsers = $loggedNames.Count
+
+$profilesRaw = Get-CimInstance Win32_UserProfile -Filter "Special = False" -ErrorAction SilentlyContinue | Where-Object { $_.LocalPath -match '^C:\\Users\\' -and $_.LocalPath -notmatch 'Public|Público|Default' }
+foreach ($p in $profilesRaw) {
+    $name = (Split-Path $p.LocalPath -Leaf)
+    $lastUseStr = "N/A"
+    
+    if ($p.LastUseTime) {
+        $lastUseDate = [datetime]$p.LastUseTime
+        $lastUseStr = $lastUseDate.ToString('yyyy-MM-dd HH:mm')
     }
-} catch { }
+
+    # Só adiciona utilizadores que usaram a máquina no último ano
+    if ($lastUseDate -and ($lastUseDate -gt (Get-Date).AddYears(-1))) {
+        $profilesList += [PSCustomObject]@{ Name = $name; LastUse = $lastUseStr; Loaded = [bool]$p.Loaded }
+        # Se Loaded = True, o utilizador está com sessão aberta agora.
+        if ([bool]$p.Loaded) {
+            $loggedNames += $name
+        }
+    }
+}
+$profiles = $profilesList.Count
+$loggedUsers = $loggedNames.Count
 
 # 3. OS e Rede
 $os = Get-CimInstance Win32_OperatingSystem -Property Caption, LastBootUpTime, TotalVisibleMemorySize, FreePhysicalMemory -ErrorAction SilentlyContinue
-$hostname = $env:COMPUTERNAME
 $uptimeStr = "N/A"
-$osCaption = if ($os) { $os.Caption } else { "N/A" }
 if ($os) {
-    $uptime = (Get-Date) - $os.LastBootUpTime
-    $uptimeStr = "$($uptime.Days)d $($uptime.Hours)h $($uptime.Minutes)m"
+    $up = (Get-Date) - $os.LastBootUpTime
+    $uptimeStr = "$($up.Days)d $($up.Hours)h $($up.Minutes)m"
 }
 
 $net = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled = 'True'" -Property IPAddress, MACAddress -ErrorAction SilentlyContinue | Select-Object -First 1
 $ip = if ($net) { $net.IPAddress[0] } else { "N/A" }
 $mac = if ($net) { $net.MACAddress } else { "N/A" }
 
-# 4. Hardware e Desempenho (CPU/RAM/Temp)
-$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+# 4. Hardware
+$cpu = Get-CimInstance Win32_Processor -Property Name, LoadPercentage -ErrorAction SilentlyContinue | Select-Object -First 1
 $cpuModel = if ($cpu) { $cpu.Name -replace "\s*\(R\)|\s*\(TM\)|CPU\s+|@\s*\d+\.\d+GHz", "" } else { "Desconhecido" }
-$cpuUsage = if ($cpu) { $cpu.LoadPercentage } else { 0 }
 
 $cpuTempStr = "N/A"
-try {
-    $thermal = Get-CimInstance -Namespace "root\wmi" -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -ne $thermal -and $thermal.CurrentTemperature) {
-        $tempC = [math]::Round(($thermal.CurrentTemperature / 10) - 273.15, 1)
-        if ($tempC -gt 0 -and $tempC -lt 150) { $cpuTempStr = $tempC.ToString() }
-    }
-} catch { }
+$thermal = Get-CimInstance -Namespace "root\wmi" -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($thermal -and $thermal.CurrentTemperature) {
+    $tempC = [math]::Round(($thermal.CurrentTemperature / 10) - 273.15, 1)
+    if ($tempC -gt 0 -and $tempC -lt 150) { $cpuTempStr = $tempC.ToString() }
+}
 
 $totalRamGB = if ($os) { [math]::Round($os.TotalVisibleMemorySize / 1MB, 1) } else { 0 }
 $freeRamGB = if ($os) { [math]::Round($os.FreePhysicalMemory / 1MB, 1) } else { 0 }
@@ -91,28 +68,20 @@ $ramPct = if ($totalRamGB -gt 0) { [math]::Round(($usedRamGB / $totalRamGB) * 10
 
 # 5. Segurança
 $av = "Windows Defender (Nativo)"
-try {
-    $avInfo = Get-CimInstance -Namespace "root\SecurityCenter2" -ClassName "AntivirusProduct" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($avInfo) { $av = $avInfo.displayName }
-} catch { }
+$avInfo = Get-CimInstance -Namespace "root\SecurityCenter2" -ClassName "AntivirusProduct" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($avInfo) { $av = $avInfo.displayName }
 
-$actStatus = "Desconhecido"
-try {
-    $slmgr = cscript.exe //nologo C:\Windows\System32\slmgr.vbs /dli 2>&1
-    $slmgrText = $slmgr -join " "
-    if ($slmgrText -match "Licenciado|Licensed") { $actStatus = "Ativado (Licenciado)" }
-    elseif ($slmgrText -match "Notificação|Notification|grace|Inicial") { $actStatus = "Não Ativado" }
-} catch { }
+$actStatus = "Não Ativado"
+$sl = Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL" -ErrorAction SilentlyContinue | Where-Object { $_.ApplicationId -eq '55c92734-d682-4d71-983e-d6ec3f16059f' } | Select-Object -First 1
+if ($sl -and $sl.LicenseStatus -eq 1) { $actStatus = "Ativado (Licenciado)" }
 
-# 6. Agentes e Softwares Adicionais
+# 6. Agentes
 $rdpReg = Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -ErrorAction SilentlyContinue
 $rdpStatus = if ($null -ne $rdpReg -and $rdpReg.fDenyTSConnections -eq 0) { "Ativado" } else { "Desativado" }
 
 $vncStatus = "Não Instalado"
-$uvnc = Get-Service -Name "uvnc_service" -ErrorAction SilentlyContinue
-$tvnc = Get-Service -Name "tvnserver" -ErrorAction SilentlyContinue
-if ($uvnc) { $vncStatus = if ($uvnc.Status.ToString() -eq 'Running') { "Ativo (Rodando)" } else { "Parado" } }
-elseif ($tvnc) { $vncStatus = if ($tvnc.Status.ToString() -eq 'Running') { "Ativo (Rodando)" } else { "Parado" } }
+$vncSvc = Get-Service -Name "uvnc_service", "tvnserver" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($vncSvc) { $vncStatus = if ($vncSvc.Status.ToString() -eq 'Running') { "Ativo (Rodando)" } else { "Parado" } }
 
 $anydeskId = "Não Instalado"
 $sysConf = "C:\ProgramData\AnyDesk\system.conf"
@@ -134,63 +103,23 @@ $zabbixStatus = if ($zabbixSvc) { if ($zabbixSvc.Status.ToString() -eq 'Running'
 $glpiSvc = Get-Service -Name "glpi-agent", "FusionInventory-Agent" -ErrorAction SilentlyContinue | Select-Object -First 1
 $glpiStatus = if ($glpiSvc) { if ($glpiSvc.Status.ToString() -eq 'Running') { "Ativo (Rodando)" } else { "Parado" } } else { "Não Instalado" }
 
-$dinfoProc = Get-Process -Name "DesktopInfo*" -ErrorAction SilentlyContinue | Select-Object -First 1
-$dinfoStatus = if ($dinfoProc) { "Ativo (Rodando)" } else { "Parado / Não Instalado" }
+$dinfoStatus = if (Get-Process -Name "DesktopInfo*" -ErrorAction SilentlyContinue | Select-Object -First 1) { "Ativo (Rodando)" } else { "Parado / Não Instalado" }
 
-# 7. Winget (App Installer)
-# Estratégia: procura em 4 locais (incluindo -AllUsers), versão em 3 fallbacks
+# 7. Winget
 $wingetStatus = "Não Instalado"
 $wingetExe = $null
-$wingetAppxVer = ""
+$realApp = Get-ChildItem "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($realApp) { $wingetExe = $realApp.FullName }
+if (-not $wingetExe) { $candidate = "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe"; if (Test-Path $candidate) { $wingetExe = $candidate } }
 
-$cmd = Get-Command winget -ErrorAction SilentlyContinue
-if ($cmd) { $wingetExe = $cmd.Source }
-
-if (-not $wingetExe) {
-    $candidate = "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe"
-    if (Test-Path $candidate) { $wingetExe = $candidate }
-}
-
-if (-not $wingetExe) {
-    $appx = Get-AppxPackage -AllUsers -Name "Microsoft.DesktopAppInstaller" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($appx) {
-        $wingetAppxVer = "$($appx.Version)"
-        if ($appx.InstallLocation) {
-            $candidate = Join-Path $appx.InstallLocation "winget.exe"
-            if (Test-Path $candidate) { $wingetExe = $candidate }
-        }
-    }
-}
-
-if (-not $wingetExe) {
-    $appInst = Get-ChildItem "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue |
-               Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($appInst) { $wingetExe = $appInst.FullName }
-}
-
-if ($wingetExe -or $wingetAppxVer) {
+if ($wingetExe) {
     $wgVer = ""
-
-    if ($wingetExe) {
-        try {
-            $wgVer = (& $wingetExe --version 2>$null | Select-Object -First 1) -join ""
-            $wgVer = $wgVer.Trim()
-        } catch { }
-    }
-
-    if (-not $wgVer -and $wingetExe) {
-        try {
-            $fv = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($wingetExe)
-            if ($fv.FileVersion) { $wgVer = $fv.FileVersion }
-            elseif ($fv.ProductVersion) { $wgVer = $fv.ProductVersion }
-        } catch { }
-    }
-
-    if (-not $wgVer -and $wingetAppxVer) { $wgVer = $wingetAppxVer }
-
+    try {
+        $fv = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($wingetExe)
+        if ($fv.FileVersion) { $wgVer = $fv.FileVersion } elseif ($fv.ProductVersion) { $wgVer = $fv.ProductVersion }
+    } catch { }
+    
     if ($wgVer) {
-        $wgVer = $wgVer.TrimStart('v').Trim()
-        $wgVer = $wgVer -replace '\.0+$', ''
         $wgVer = $wgVer -replace '\.0+$', ''
         if ($wgVer -notmatch '^v') { $wgVer = "v$wgVer" }
         $wingetStatus = "Instalado ($wgVer)"
@@ -199,35 +128,25 @@ if ($wingetExe -or $wingetAppxVer) {
     }
 }
 
-# 8. Reboot Pendente (Windows Update / CBS / PendingFileRenameOperations)
+# 8. Reboot Pendente
 $rebootPending = $false
 $rebootReasons = @()
 
-if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') {
-    $rebootPending = $true
-    $rebootReasons += "WU"
-}
-
-if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') {
-    $rebootPending = $true
-    $rebootReasons += "CBS"
-}
+if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') { $rebootPending = $true; $rebootReasons += "WU" }
+if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') { $rebootPending = $true; $rebootReasons += "CBS" }
 
 $pfro = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name 'PendingFileRenameOperations' -ErrorAction SilentlyContinue).PendingFileRenameOperations
-if ($pfro -and $pfro.Count -gt 0) {
-    $rebootPending = $true
-    $rebootReasons += "PFR"
-}
+if ($pfro -and $pfro.Count -gt 0) { $rebootPending = $true; $rebootReasons += "PFR" }
 
 $rebootStatus = if ($rebootPending) { "Pendente (" + ($rebootReasons -join ", ") + ")" } else { "OK" }
 
 # Resultado
 [PSCustomObject]@{
-    HostName = $hostname
-    OSVersion = $osCaption
+    HostName = $env:COMPUTERNAME
+    OSVersion = if ($os) { $os.Caption } else { "N/A" }
     Activation = $actStatus
     CPUModel = $cpuModel
-    CPUUsage = $cpuUsage
+    CPUUsage = if ($cpu) { $cpu.LoadPercentage } else { 0 }
     CPUTemp = $cpuTempStr
     TotalRAM = $totalRamGB
     UsedRAM = $usedRamGB
