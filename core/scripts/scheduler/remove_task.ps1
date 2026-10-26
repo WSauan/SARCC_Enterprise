@@ -1,30 +1,29 @@
-# Remove uma tarefa agendada do SARCC e o .ps1 associado.
-# Variável: {{task_name}}
+<#
+.SYNOPSIS
+    Remove múltiplas tarefas e apaga os scripts residuais.
+#>
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+$ErrorActionPreference = 'SilentlyContinue'
 
-$TaskName = '{{task_name}}'
-
-$LogData = @{
-    Script      = "Remover Agendamento ($TaskName)"
-    StatusFinal = "SUCESSO"
-    Detalhes    = @()
-}
+# Recebe os nomes separados por vírgula e divide-os num Array
+$TaskNamesStr = '{{task_names}}'
+$TaskNames = $TaskNamesStr -split ","
+$Count = 0
 
 try {
-    $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if ($existingTask) {
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-        $LogData.Detalhes += "Tarefa '$TaskName' removida com sucesso."
-    } else {
-        $LogData.Detalhes += "Tarefa não encontrada."
+    foreach ($TaskName in $TaskNames) {
+        $t = $TaskName.Trim()
+        if (-not $t) { continue }
+        
+        Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction Stop
+        
+        # Higiene: apaga o script base64 associado
+        $ScriptPath = "C:\ProgramData\SARCC\Scripts\$t.ps1"
+        if (Test-Path $ScriptPath) { Remove-Item -Path $ScriptPath -Force }
+        $Count++
     }
-
-    $ScriptPath = Join-Path "C:\ProgramData\SARCC\Scripts" "$TaskName.ps1"
-    if (Test-Path $ScriptPath) {
-        Remove-Item -Path $ScriptPath -Force
-    }
+    @{ StatusFinal = "SUCESSO"; Mensagem = "$Count tarefa(s) removida(s) com sucesso." } | ConvertTo-Json -Compress
 } catch {
-    $LogData.StatusFinal = "ERRO"
-    $LogData.Detalhes += $_.Exception.Message
-} finally {
-    $LogData | ConvertTo-Json -Compress | Write-Output
+    @{ StatusFinal = "ERRO"; Mensagem = $_.Exception.Message } | ConvertTo-Json -Compress
 }

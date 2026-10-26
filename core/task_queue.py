@@ -29,10 +29,12 @@ class TaskWorker(threading.Thread):
             if task is None:
                 break
                 
-            target_pc, script_name, script_content, module_name, credentials, signals = task
+            # Desempacotar argumentos incluindo script_b64 (novo para o Agendador)
+            target_pc, script_name, script_content, module_name, credentials, script_b64, signals = task
             conn = RemoteConnectionManager()
             executor = os.environ.get("USERNAME", "Desconhecido")
             
+            # --- 1. Injeção Base64 Segura (Credenciais) ---
             if credentials and isinstance(credentials, dict):
                 def _b64(s: str) -> str:
                     return b64.b64encode((s or "").encode("utf-8")).decode("ascii").replace('\n', '')
@@ -44,9 +46,10 @@ class TaskWorker(threading.Thread):
                 script_content = script_content.replace("[[ADMIN_USER]]", user_b64)
                 script_content = script_content.replace("[[ADMIN_PASS]]", pass_b64)
                 script_content = script_content.replace("[[VNC_PASS]]", vnc_b64)
-                log.debug(f"[{target_pc}] Credenciais Base64 injetadas no script com sucesso.")
-            else:
-                log.debug(f"[{target_pc}] Sem credenciais fornecidas. Placeholders mantidos.")
+            
+            # --- 2. Injeção Base64 de Scripts Grandes (Bypass do WinError 206) ---
+            if script_b64:
+                script_content = script_content.replace("{{script_b64}}", script_b64)
             
             signals.started.emit(target_pc)
             
@@ -85,13 +88,14 @@ class TaskQueueManager:
             worker.start()
             self.workers.append(worker)
 
+    # Note a adição de `script_b64=None`
     def add_task(self, target_pc, script_name, script_content, module_name="Execução Remota",
-                 credentials=None, on_start=None, on_finish=None, on_error=None):
+                 credentials=None, script_b64=None, on_start=None, on_finish=None, on_error=None):
         signals = WorkerSignals()
         if on_start: signals.started.connect(on_start)
         if on_finish: signals.finished.connect(on_finish)
         if on_error: signals.error.connect(on_error)
-        self.task_queue.put((target_pc, script_name, script_content, module_name, credentials, signals))
+        self.task_queue.put((target_pc, script_name, script_content, module_name, credentials, script_b64, signals))
 
     def shutdown(self, timeout: float = 2.0):
         log.info(f"TaskQueueManager: encerrando {len(self.workers)} worker(s)...")

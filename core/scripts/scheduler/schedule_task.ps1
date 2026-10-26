@@ -1,70 +1,56 @@
-# Cria/sobrescreve uma tarefa agendada do SARCC no alvo.
-# A tarefa roda como SYSTEM (conta-maquina via Kerberos, sem senha no alvo).
-#
-# Variáveis:
-#   {{task_name}}     - nome da tarefa (sem o prefixo SARCC_)
-#   {{b64_script}}    - conteúdo do .ps1 codificado em Base64 (UTF-8)
-#   {{trigger_type}}  - "Ao Iniciar a Máquina (Boot)" ou "Diariamente (Horário Específico)"
-#   {{trigger_time}}  - "HH:mm" (ignorado se trigger_type for Boot)
+<#
+.SYNOPSIS
+    Agenda uma tarefa remota usando System (Conta-Máquina).
+#>
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+$ErrorActionPreference = 'Stop'
 
-$TaskName    = '{{task_name}}'
-$EncodedScript = '{{b64_script}}'
-$TriggerType = '{{trigger_type}}'
-$TriggerTime = '{{trigger_time}}'
-
-$LogData = @{
-    Script      = "Agendamento ($TaskName)"
-    StatusFinal = "SUCESSO"
-    Detalhes    = @()
-}
+$TaskName    = "SARCC_{{task_name}}"
+$TriggerType = "{{trigger_type}}" 
+$TriggerTime = "{{trigger_time}}" 
+$TriggerIso  = "{{trigger_iso}}"
+$TriggerDays = "{{trigger_days}}" 
+$ScriptB64   = "{{script_b64}}"
 
 try {
+    # 1. Preparar a Pasta Invisível
     $ScriptDir = "C:\ProgramData\SARCC\Scripts"
-    if (-not (Test-Path $ScriptDir)) {
-        New-Item -ItemType Directory -Path $ScriptDir -Force | Out-Null
-    }
-    $ScriptPath = Join-Path $ScriptDir "$TaskName.ps1"
+    if (-not (Test-Path $ScriptDir)) { $null = New-Item -Path $ScriptDir -ItemType Directory -Force }
+    $ScriptPath = "$ScriptDir\$TaskName.ps1"
 
-    # Decodifica e grava o script do agendamento
-    [System.Text.Encoding]::UTF8.GetString(
-        [System.Convert]::FromBase64String($EncodedScript)
-    ) | Out-File -FilePath $ScriptPath -Encoding UTF8 -Force
+    # 2. Descodificar Payload Base64
+    $bytes = [System.Convert]::FromBase64String($ScriptB64)
+    $scriptDecoded = [System.Text.Encoding]::UTF8.GetString($bytes)
+    $scriptDecoded | Out-File -FilePath $ScriptPath -Encoding UTF8 -Force
 
-    # Remove versão anterior, se existir
-    $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if ($existingTask) {
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-    }
+    # 3. Remover Tarefa Antiga se existir
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 
-    # Ação
-    $Action = New-ScheduledTaskAction -Execute "powershell.exe" `
-        -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`""
-
-    # Trigger: diário com horário específico OU ao iniciar
-    if ($TriggerType -like "*Diariamente*") {
-        $Trigger = New-ScheduledTaskTrigger -Daily -At $TriggerTime
-    } else {
-        $Trigger = New-ScheduledTaskTrigger -AtStartup
+    # 4. Criar Gatilho (Trigger) Dinâmico
+    $Trigger = $null
+    switch ($TriggerType) {
+        "Boot"   { $Trigger = New-ScheduledTaskTrigger -AtStartup }
+        "Logon"  { $Trigger = New-ScheduledTaskTrigger -AtLogOn }
+        "Once"   { $Trigger = New-ScheduledTaskTrigger -Once -At $TriggerIso }
+        "Daily"  { $Trigger = New-ScheduledTaskTrigger -Daily -At $TriggerTime }
+        "Weekly" { 
+            $daysArray = $TriggerDays -split ","
+            $Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $daysArray -At $TriggerTime
+        }
+        default  { $Trigger = New-ScheduledTaskTrigger -Daily -At $TriggerTime }
     }
 
-    # Principal: SYSTEM com privilégios máximos
-    $Principal = New-ScheduledTaskPrincipal `
-        -UserId "SYSTEM" `
-        -LogonType ServiceAccount `
-        -RunLevel Highest
+    # 5. Criar Ação Invisível
+    $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`""
 
-    Register-ScheduledTask `
-        -TaskName $TaskName `
-        -TaskPath "\SARCC\" `
-        -Action $Action `
-        -Trigger $Trigger `
-        -Principal $Principal `
-        -Force | Out-Null
+    # 6. Rodar como SYSTEM (Nível Máximo, Acesso de Rede com Conta-Máquina)
+    $Principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 
-    $LogData.Detalhes += "Tarefa '$TaskName' agendada com sucesso!"
+    # 7. Registar no Windows
+    $null = Register-ScheduledTask -TaskName $TaskName -Trigger $Trigger -Action $Action -Principal $Principal -Force
+
+    @{ StatusFinal = "SUCESSO"; Mensagem = "Tarefa '$TaskName' agendada para: $TriggerType" } | ConvertTo-Json -Compress
 } catch {
-    $LogData.StatusFinal = "ERRO FATAL"
-    $LogData.Detalhes += $_.Exception.Message
-} finally {
-    $LogData | ConvertTo-Json -Compress | Write-Output
+    @{ StatusFinal = "ERRO"; Mensagem = $_.Exception.Message } | ConvertTo-Json -Compress
 }

@@ -1,324 +1,354 @@
 import os
-import json
 import base64
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QLineEdit, QPushButton, QTableWidget, 
-                             QTableWidgetItem, QHeaderView, QGroupBox, 
-                             QComboBox, QMessageBox, QTimeEdit, QAbstractItemView, QInputDialog)
-from PyQt6.QtCore import Qt, QTime, pyqtSlot, QThread, pyqtSignal
+from datetime import datetime
+from pathlib import Path
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, 
+    QGroupBox, QComboBox, QMessageBox, QTableWidget, QTableWidgetItem, 
+    QHeaderView, QAbstractItemView, QTimeEdit, QDateEdit, QCheckBox
+)
+from PyQt6.QtCore import Qt, pyqtSlot, QDate, QTime
 
 from core.task_queue import TaskQueueManager
 from core.database import DatabaseManager
-from core.remote_connection import RemoteConnectionManager
+from core.ps_loader import load_ps_template, PsTemplateError
+from core.config import get_ps_scripts_dir, get_data_dir
 from gui.views.base_view import BaseView
-from core.logger import get_logger
-
-log = get_logger(__name__)
-
-class FetchTasksWorker(QThread):
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
-
-    def __init__(self, target_pc):
-        super().__init__()
-        self.target_pc = target_pc
-
-    def run(self):
-        try:
-            conn = RemoteConnectionManager()
-            ps_script = """
-            $tasks = Get-ScheduledTask -TaskPath "\\SARCC\\" -ErrorAction SilentlyContinue
-            $list = @()
-            if ($tasks) {
-                foreach ($t in $tasks) {$list += [PSCustomObject]@{
-                        Name = $t.TaskName
-                        State = $t.State.ToString()
-                    }
-                }
-            }
-            @{ Tarefas = $list } | ConvertTo-Json -Depth 3 -Compress
-            """
-            res = conn.execute_script(self.target_pc, ps_script)
-            
-            if res["status"] == "Sucesso" and res.get("json_data"):
-                self.finished.emit(res["json_data"].get("Tarefas", []))
-            else:
-                self.error.emit(res.get("log_saida", "Falha ao ler agendamentos do alvo."))
-        except Exception as e:
-            self.error.emit(str(e))
 
 class SchedulerView(BaseView):
     def __init__(self, main_window_ref=None):
         super().__init__(main_window_ref)
-        self.db = DatabaseManager()
         self.queue_manager = getattr(main_window_ref, 'queue_manager', None) or TaskQueueManager(max_threads=5)
+        self.db = DatabaseManager()
         self._setup_ui()
+        self.load_local_scripts()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
 
         title = QLabel("Agendador de Tarefas Remotas (Automação)")
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #4a90e2;")
-        layout.addWidget(title)
+        main_layout.addWidget(title)
 
-        config_group = QGroupBox("1. Novo Agendamento")
-        config_layout = QHBoxLayout(config_group)
-        config_layout.setContentsMargins(15, 20, 15, 15)
-        
+        group_schedule = QGroupBox("1. Novo Agendamento Automático")
+        layout_schedule = QVBoxLayout(group_schedule)
+        layout_schedule.setContentsMargins(15, 20, 15, 15)
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Computador Alvo:"))
         self.inp_target = QLineEdit()
-        self.inp_target.setFixedHeight(32)
-        self.inp_target.setPlaceholderText("IP ou Hostname (ex: HUL-WK-244377E)")
-        self.inp_target.setStyleSheet("padding: 0 10px;")
+        self.inp_target.setPlaceholderText("Ex: HUL-WK-TESTE")
         self.inp_target.textChanged.connect(self._force_uppercase)
-        
-        self.cmb_scripts = QComboBox()
-        self.cmb_scripts.setFixedHeight(32)
-        self.cmb_scripts.setStyleSheet("padding: 0 10px; font-weight: bold;")
-        
-        self.btn_reload_scripts = QPushButton("↻ Recarregar Biblioteca")
-        self.btn_reload_scripts.setFixedHeight(32)
-        self.btn_reload_scripts.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_reload_scripts.setStyleSheet("padding: 0 15px; font-weight: bold; border-radius: 4px;")
-        self.btn_reload_scripts.clicked.connect(self.load_scripts)
-        
-        config_layout.addWidget(QLabel("Computador Alvo:"))
-        config_layout.addWidget(self.inp_target, stretch=1)
-        config_layout.addWidget(QLabel(" Script:"))
-        config_layout.addWidget(self.cmb_scripts, stretch=2)
-        config_layout.addWidget(self.btn_reload_scripts)
-        layout.addWidget(config_group)
+        row1.addWidget(self.inp_target, stretch=2)
 
-        trigger_group = QGroupBox("2. Regra de Execução (Gatilho)")
-        trigger_layout = QHBoxLayout(trigger_group)
-        trigger_layout.setContentsMargins(15, 20, 15, 15)
+        row1.addSpacing(15)
+
+        row1.addWidget(QLabel("Script a Executar:"))
+        self.cmb_scripts = QComboBox()
+        row1.addWidget(self.cmb_scripts, stretch=3)
+
+        btn_reload = QPushButton("↻ Recarregar Biblioteca")
+        btn_reload.clicked.connect(self.load_local_scripts)
+        row1.addWidget(btn_reload)
+        layout_schedule.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Quando iniciar?"))
         
         self.cmb_trigger = QComboBox()
-        self.cmb_trigger.setFixedHeight(32)
-        self.cmb_trigger.addItems(["Ao Iniciar a Máquina (Boot)", "Diariamente (Horário Específico)"])
-        self.cmb_trigger.setStyleSheet("padding: 0 10px; font-weight: bold;")
-        self.cmb_trigger.currentTextChanged.connect(self.toggle_time_input)
-        
-        self.inp_time = QTimeEdit()
-        self.inp_time.setFixedHeight(32)
-        self.inp_time.setDisplayFormat("HH:mm")
-        self.inp_time.setStyleSheet("padding: 0 10px; font-size: 14px;")
-        self.inp_time.setEnabled(False) 
-        
-        trigger_layout.addWidget(QLabel("Quando?"))
-        trigger_layout.addWidget(self.cmb_trigger)
-        trigger_layout.addWidget(QLabel("  Horário:"))
-        trigger_layout.addWidget(self.inp_time)
-        trigger_layout.addStretch()
-        
-        self.btn_schedule = QPushButton("⏱️ Agendar Tarefa")
+        self.cmb_trigger.addItems([
+            "Uma vez (Data/Hora específica)",
+            "Diariamente", 
+            "Semanalmente",
+            "Ao Iniciar o Computador (Boot)", 
+            "Ao Fazer Logon"
+        ])
+        self.cmb_trigger.currentIndexChanged.connect(self._toggle_trigger_options)
+        row2.addWidget(self.cmb_trigger)
+
+        self.lbl_date = QLabel(" Data:")
+        row2.addWidget(self.lbl_date)
+        self.date_picker = QDateEdit()
+        self.date_picker.setDisplayFormat("dd/MM/yyyy")
+        self.date_picker.setDate(QDate.currentDate())
+        self.date_picker.setCalendarPopup(True)
+        row2.addWidget(self.date_picker)
+
+        self.lbl_time = QLabel(" Horário:")
+        row2.addWidget(self.lbl_time)
+        self.time_picker = QTimeEdit()
+        self.time_picker.setDisplayFormat("HH:mm")
+        self.time_picker.setTime(QTime.currentTime())
+        row2.addWidget(self.time_picker)
+
+        self.widget_days = QWidget()
+        layout_days = QHBoxLayout(self.widget_days)
+        layout_days.setContentsMargins(10, 0, 0, 0)
+        self.chk_days = {}
+        for day_name, day_val in [("Seg", "Monday"), ("Ter", "Tuesday"), ("Qua", "Wednesday"), 
+                                  ("Qui", "Thursday"), ("Sex", "Friday"), ("Sáb", "Saturday"), ("Dom", "Sunday")]:
+            chk = QCheckBox(day_name)
+            self.chk_days[day_val] = chk
+            layout_days.addWidget(chk)
+        row2.addWidget(self.widget_days)
+
+        row2.addStretch()
+
+        self.btn_schedule = QPushButton("⏱ Agendar Tarefa no Alvo")
         self.btn_schedule.setFixedHeight(32)
-        self.btn_schedule.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_schedule.setStyleSheet("background-color: #1e8a5e; color: white; padding: 0 15px; font-weight: bold; border-radius: 4px;")
+        self.btn_schedule.setStyleSheet("background-color: #1e8a5e; color: white; font-weight: bold; padding: 0 20px; border-radius: 4px;")
         self.btn_schedule.clicked.connect(self.schedule_task)
-        
-        trigger_layout.addWidget(self.btn_schedule)
-        layout.addWidget(trigger_group)
+        row2.addWidget(self.btn_schedule)
 
-        manager_group = QGroupBox("3. Gestão de Tarefas Remotas")
-        manager_layout = QVBoxLayout(manager_group)
-        manager_layout.setContentsMargins(15, 20, 15, 15)
-        
-        actions_layout = QHBoxLayout()
-        self.btn_list = QPushButton("📋 Buscar Tarefas do Alvo")
-        self.btn_list.setFixedHeight(32)
-        self.btn_list.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_list.setStyleSheet("background-color: #2a7de1; color: white; padding: 0 15px; font-weight: bold; border-radius: 4px;")
-        self.btn_list.clicked.connect(self.fetch_active_tasks)
-        
-        self.btn_remove = QPushButton("🗑️ Remover Tarefa Selecionada")
+        layout_schedule.addLayout(row2)
+        main_layout.addWidget(group_schedule)
+
+        group_manage = QGroupBox("2. Gestão de Tarefas Remotas Ativas")
+        layout_manage = QVBoxLayout(group_manage)
+        layout_manage.setContentsMargins(15, 20, 15, 15)
+
+        btn_layout = QHBoxLayout()
+        self.btn_fetch = QPushButton("📋 Buscar Tarefas do Alvo")
+        self.btn_fetch.setFixedHeight(32)
+        self.btn_fetch.setStyleSheet("background-color: #2a7de1; color: white; font-weight: bold; padding: 0 20px; border-radius: 4px;")
+        self.btn_fetch.clicked.connect(self.fetch_tasks)
+        btn_layout.addWidget(self.btn_fetch)
+
+        self.btn_remove = QPushButton("🗑 Remover Tarefa Selecionada")
         self.btn_remove.setFixedHeight(32)
-        self.btn_remove.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_remove.setStyleSheet("background-color: #d9534f; color: white; padding: 0 15px; font-weight: bold; border-radius: 4px;")
-        self.btn_remove.clicked.connect(self.remove_selected_task)
+        self.btn_remove.setStyleSheet("background-color: #d9534f; color: white; font-weight: bold; padding: 0 20px; border-radius: 4px;")
+        self.btn_remove.clicked.connect(self.remove_task)
+        btn_layout.addWidget(self.btn_remove)
         
-        actions_layout.addWidget(self.btn_list)
-        actions_layout.addWidget(self.btn_remove)
-        actions_layout.addStretch()
-        manager_layout.addLayout(actions_layout)
+        btn_layout.addStretch()
+        layout_manage.addLayout(btn_layout)
 
-        self.tasks_table = QTableWidget(0, 2)
-        self.tasks_table.setHorizontalHeaderLabels(["Nome da Tarefa", "Status"])
-        self.tasks_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tasks_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.tasks_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        manager_layout.addWidget(self.tasks_table)
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Nome da Tarefa", "Status", "Gatilho", "Última Execução", "Próxima Execução"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.verticalHeader().setVisible(False)
+        layout_manage.addWidget(self.table)
+
+        main_layout.addWidget(group_manage, stretch=1)
+        self._toggle_trigger_options()
+
+    def load_local_scripts(self):
+        self.cmb_scripts.clear()
         
-        layout.addWidget(manager_group)
+        paths_to_check = [
+            get_data_dir() / "scripts",
+            get_ps_scripts_dir() / "user_scripts"
+        ]
+        
+        found_any = False
+        for path in paths_to_check:
+            if not path.exists():
+                try: path.mkdir(parents=True, exist_ok=True)
+                except: pass
+            
+            if path.exists():
+                for file in path.glob("*.ps1"):
+                    self.cmb_scripts.addItem(file.stem, str(file))
+                    found_any = True
+                    
+        if not found_any:
+            self.cmb_scripts.addItem("<Nenhum script na pasta data/scripts>", "")
+
+    def _toggle_trigger_options(self):
+        trigger = self.cmb_trigger.currentText()
+        
+        self.lbl_time.hide()
+        self.time_picker.hide()
+        self.lbl_date.hide()
+        self.date_picker.hide()
+        self.widget_days.hide()
+        
+        if trigger == "Uma vez (Data/Hora específica)":
+            self.lbl_date.show()
+            self.date_picker.show()
+            self.lbl_time.show()
+            self.time_picker.show()
+        elif trigger == "Diariamente":
+            self.lbl_time.show()
+            self.time_picker.show()
+        elif trigger == "Semanalmente":
+            self.lbl_time.show()
+            self.time_picker.show()
+            self.widget_days.show()
 
     def showEvent(self, event):
         super().showEvent(event)
         self.inp_target.setFocus()
-        self.load_scripts()
-
-    def toggle_time_input(self, text):
-        if "Diariamente" in text: self.inp_time.setEnabled(True)
-        else: self.inp_time.setEnabled(False)
-
-    def load_scripts(self):
-        self.cmb_scripts.clear()
-        scripts = self.db.get_all_scripts()
-        if not scripts: self.cmb_scripts.addItem("Nenhum script salvo na biblioteca.")
-        else:
-            for s in scripts:
-                self.cmb_scripts.addItem(s[1], userData=s[4])
-
-    def fetch_active_tasks(self):
-        target = self.inp_target.text().strip()
-        if not target:
-            QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
-            self.inp_target.setFocus()
-            return
-
-        self.btn_list.setText("Buscando...")
-        self.btn_list.setEnabled(False)
-        self.tasks_table.setRowCount(0)
-
-        self.worker = FetchTasksWorker(target)
-        self.worker.finished.connect(self.populate_tasks)
-        self.worker.error.connect(self.show_task_error)
-        self.worker.start()
-
-    def populate_tasks(self, tasks_list):
-        self.btn_list.setText("📋 Buscar Tarefas do Alvo")
-        self.btn_list.setEnabled(True)
-        
-        if not tasks_list:
-            QMessageBox.information(self, "Lista", "Nenhuma tarefa do SARCC agendada neste computador.")
-            return
-            
-        if not isinstance(tasks_list, list): tasks_list = [tasks_list]
-            
-        for t in tasks_list:
-            row = self.tasks_table.rowCount()
-            self.tasks_table.insertRow(row)
-            self.tasks_table.setItem(row, 0, QTableWidgetItem(t.get("Name", "-")))
-            self.tasks_table.setItem(row, 1, QTableWidgetItem(t.get("State", "-")))
-
-    def show_task_error(self, err):
-        self.btn_list.setText("📋 Buscar Tarefas do Alvo")
-        self.btn_list.setEnabled(True)
-        QMessageBox.warning(self, "Erro", f"Não foi possível ler as tarefas:\n{err}")
+        self.load_local_scripts()
 
     def schedule_task(self):
         target = self.inp_target.text().strip()
-        script_nome = self.cmb_scripts.currentText()
-        ps_script = self.cmb_scripts.currentData()
-
         if not target:
-            QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
-            self.inp_target.setFocus()
-            return
-        if not ps_script:
-            return
+            return QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
+        
+        script_path = self.cmb_scripts.currentData()
+        if not script_path or not Path(script_path).exists():
+            return QMessageBox.warning(self, "Aviso", "Não existem scripts válidos selecionados.")
 
-        # --- Agendamento roda como SYSTEM → conta-máquina acessa o share ---
-        # NÃO pedimos credenciais aqui. O script detecta em runtime que os
-        # placeholders [[ADMIN_*]] não foram substituídos e cai em modo
-        # conta-máquina (Kerberos autentica como DOMINIO\NOMEDAMÁQUINA$).
-        #
-        # Motivo: senha em arquivo .ps1 no disco = vulnerabilidade (admin local
-        # consegue ler). Como a conta-máquina tem acesso ao share (validado),
-        # evitamos por completo a exposição de credencial.
-        if "[[ADMIN_PASS]]" in ps_script or "[[ADMIN_USER]]" in ps_script:
-            log.info(
-                f"Script '{script_nome}' contém placeholders de credencial — "
-                "será agendado em modo conta-máquina (SYSTEM)"
+        script_name = self.cmb_scripts.currentText()
+        
+        try:
+            with open(script_path, 'r', encoding='utf-8') as f:
+                script_content = f.read()
+            # Gera o Base64, mas envia como parâmetro 'script_b64' em vez de embutir no script_content
+            b64_payload = base64.b64encode(script_content.encode('utf-8')).decode('ascii').replace('\n', '')
+        except Exception as e:
+            return QMessageBox.critical(self, "Erro", f"Falha ao ler o script local:\n{e}")
+
+        ui_trigger = self.cmb_trigger.currentText()
+        trigger_type = "Daily"
+        trigger_days = ""
+
+        if "Boot" in ui_trigger: trigger_type = "Boot"
+        elif "Logon" in ui_trigger: trigger_type = "Logon"
+        elif "Uma vez" in ui_trigger: trigger_type = "Once"
+        elif "Diariamente" in ui_trigger: trigger_type = "Daily"
+        elif "Semanalmente" in ui_trigger: 
+            trigger_type = "Weekly"
+            selected_days = [val for val, chk in self.chk_days.items() if chk.isChecked()]
+            if not selected_days:
+                return QMessageBox.warning(self, "Aviso", "Selecione pelo menos um dia da semana.")
+            trigger_days = ",".join(selected_days)
+
+        trigger_time = self.time_picker.time().toString("HH:mm")
+        trigger_iso = f"{self.date_picker.date().toString('yyyy-MM-dd')}T{self.time_picker.time().toString('HH:mm:00')}"
+
+        try:
+            # Nota: O template schedule_task.ps1 já deve ter {{script_b64}} escrito. Não o vamos
+            # embutir aqui no load_ps_template para evitar explodir a limitação de 8191 caracteres do PS.
+            ps_script = load_ps_template(
+                "scheduler", "schedule_task",
+                task_name=script_name,
+                trigger_type=trigger_type,
+                trigger_time=trigger_time,
+                trigger_iso=trigger_iso,
+                trigger_days=trigger_days
             )
+        except PsTemplateError as e:
+            return QMessageBox.critical(self, "Erro", f"Falha no template:\n{e}")
 
-        # Codifica o script TAL COMO ESTÁ (placeholders preservados)
-        trigger_type = self.cmb_trigger.currentText()
-        trigger_time = self.inp_time.time().toString("HH:mm")
-        b64_script = base64.b64encode(ps_script.encode('utf-8')).decode('utf-8')
-        task_name = f"SARCC_{script_nome.replace(' ', '_')}"
+        self.btn_schedule.setEnabled(False)
+        self.btn_schedule.setText("Agendando...")
 
-        ps_remote_script = f"""
-        $TaskName = "{task_name}"
-        $EncodedScript = "{b64_script}"
-        $TriggerType = "{trigger_type}"
-        $TriggerTime = "{trigger_time}"
-        
-        $LogData = @{{ Script = "Agendamento ($TaskName)"; StatusFinal = "SUCESSO"; Detalhes = @() }}
-        try {{
-            $ScriptDir = "C:\\ProgramData\\SARCC\\Scripts"
-            if (-not (Test-Path $ScriptDir)) {{ New-Item -ItemType Directory -Path $ScriptDir -Force | Out-Null }}
-            $ScriptPath = "$ScriptDir\\$TaskName.ps1"
-            
-            [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($EncodedScript)) | Out-File -FilePath $ScriptPath -Encoding UTF8 -Force
+        # --- A injeção pesada acontece na TaskQueue via `script_b64=b64_payload` ---
+        self.queue_manager.add_task(
+            target_pc=target, script_name=f"Agendar: {script_name}", script_content=ps_script,
+            module_name="[Scheduler] Agendamento", script_b64=b64_payload,
+            on_finish=lambda t, s, d: self._on_task_done("Agendamento concluído.", d),
+            on_error=lambda t, e: self._on_task_error(e)
+        )
 
-            $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-            if ($existingTask) {{ Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false }}
-
-            $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`""
-            if ($TriggerType -match "Diariamente") {{ $Trigger = New-ScheduledTaskTrigger -Daily -At $TriggerTime }} 
-            else {{ $Trigger = New-ScheduledTaskTrigger -AtStartup }}
-
-            $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-            Register-ScheduledTask -TaskName $TaskName -TaskPath "\\SARCC\\" -Action $Action -Trigger $Trigger -Principal $Principal -Force | Out-Null
-            $LogData.Detalhes += "Tarefa '$TaskName' agendada com sucesso!"
-        }} catch {{
-            $LogData.StatusFinal = "ERRO FATAL"; $LogData.Detalhes += $_.Exception.Message
-        }} finally {{ $LogData | ConvertTo-Json -Compress | Write-Output }}
-        """
-
-        # Sem credentials — o script remoto roda como SYSTEM e detecta
-        # modo conta-máquina automaticamente.
-        self.disparar_fila(target, f"Agendar: {script_nome}", ps_remote_script, credentials=None)
-
-    def remove_selected_task(self):
+    def fetch_tasks(self):
         target = self.inp_target.text().strip()
-        selected_items = self.tasks_table.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, "Aviso", "Selecione uma tarefa na tabela primeiro.")
-            return
-            
-        task_name = self.tasks_table.item(selected_items[0].row(), 0).text()
+        if not target:
+            return QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
+
+        try:
+            ps_script = load_ps_template("scheduler", "fetch_tasks")
+        except PsTemplateError as e:
+            return QMessageBox.critical(self, "Erro", f"Falha no template:\n{e}")
+
+        self.btn_fetch.setEnabled(False)
+        self.btn_fetch.setText("Buscando...")
+        self.table.setRowCount(0)
+
+        self.queue_manager.add_task(
+            target_pc=target, script_name="Listar Tarefas Agendadas", script_content=ps_script,
+            module_name="[Scheduler] Listagem",
+            on_finish=lambda t, s, d: self._on_fetch_success(d),
+            on_error=lambda t, e: self._on_task_error(e)
+        )
+
+    def remove_task(self):
+        target = self.inp_target.text().strip()
+        # Coleta todas as linhas que o utilizador selecionou (com Ctrl/Shift)
+        selected_rows = sorted(list(set(idx.row() for idx in self.table.selectedIndexes())))
         
-        reply = QMessageBox.question(self, 'Remover', f'Apagar a tarefa "{task_name}" do alvo {target}?', QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if not target or not selected_rows:
+            return QMessageBox.warning(self, "Aviso", "Selecione pelo menos uma tarefa na lista (use Ctrl ou Shift para várias).")
+
+        # Puxa o nome exato da tarefa da Coluna 0
+        task_names = [self.table.item(r, 0).text() for r in selected_rows]
+        tasks_str = "\n".join(f"- {t}" for t in task_names)
+        
+        reply = QMessageBox.question(self, "Confirmação Múltipla", f"Remover {len(task_names)} tarefa(s) do alvo?\n\n{tasks_str}")
         if reply != QMessageBox.StandardButton.Yes: return
 
-        ps_remote_script = f"""
-        $TaskName = "{task_name}"
-        $LogData = @{{ Script = "Remover Agendamento ($TaskName)"; StatusFinal = "SUCESSO"; Detalhes = @() }}
-        try {{
-            $existingTask = Get-ScheduledTask -TaskName$TaskName -ErrorAction SilentlyContinue
-            if ($existingTask) {{ 
-                Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false 
-                $LogData.Detalhes += "Tarefa '$TaskName' removida com sucesso."
-            }} else {{
-                $LogData.Detalhes += "Tarefa não encontrada."
-            }}
-            $ScriptPath = "C:\\ProgramData\\SARCC\\Scripts\\$TaskName.ps1"
-            if (Test-Path $ScriptPath) {{ Remove-Item -Path$ScriptPath -Force }}
-        }} catch {{
-            $LogData.StatusFinal = "ERRO"; $LogData.Detalhes +=$_.Exception.Message
-        }} finally {{ $LogData | ConvertTo-Json -Compress | Write-Output }}
-        """
-        
-        self.disparar_fila(target, f"Remover: {task_name}", ps_remote_script)
-    
-    def disparar_fila(self, target, nome_tarefa, script_content, credentials=None):
-        self.queue_manager.add_task(
-            target_pc=target,
-            script_name=nome_tarefa,
-            script_content=script_content,
-            credentials=credentials,
-            on_start=None,
-            on_finish=self._on_task_finished_refresh,
-            on_error=self._on_task_error
-        )
-        QMessageBox.information(self, "Enviado", f"A solicitação '{nome_tarefa}' foi enviada.\nA tabela será atualizada quando concluir.")
+        try:
+            # Envia todos os nomes numa única string separada por vírgula
+            ps_script = load_ps_template("scheduler", "remove_task", task_names=",".join(task_names))
+        except PsTemplateError as e:
+            return QMessageBox.critical(self, "Erro", f"Falha no template:\n{e}")
 
-    @pyqtSlot(str, str, dict)
-    def _on_task_finished_refresh(self, target_pc, status, json_data):
-        self.fetch_active_tasks()
+        self.btn_remove.setEnabled(False)
+        self.queue_manager.add_task(
+            target_pc=target, script_name=f"Remover {len(task_names)} Tarefa(s)", script_content=ps_script,
+            module_name="[Scheduler] Remoção",
+            on_finish=lambda t, s, d: self._on_remove_success(d),
+            on_error=lambda t, e: self._on_task_error(e)
+        )
+
+    @pyqtSlot(dict)
+    def _on_remove_success(self, data):
+        self.btn_remove.setEnabled(True)
+        QMessageBox.information(self, "Sucesso", data.get("Mensagem", "Tarefas removidas."))
+        self.fetch_tasks()
+
+    @pyqtSlot(dict)
+    def _on_fetch_success(self, data):
+        self.btn_fetch.setEnabled(True)
+        self.btn_fetch.setText("📋 Buscar Tarefas do Alvo")
         
-    @pyqtSlot(str, str)
-    def _on_task_error(self, target_pc, error_msg):
-        QMessageBox.critical(self, "Falha na Ação", f"Ocorreu um erro no servidor {target_pc}:\n{error_msg}")
+        tasks = data.get("Tasks", [])
+        if not isinstance(tasks, list):
+            tasks = [tasks] if tasks else []
+
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0) # Limpa tudo primeiro
+
+        for t in tasks:
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            
+            self.table.setItem(r, 0, QTableWidgetItem(t.get("TaskName", "")))
+            
+            status = t.get("Status", "")
+            item_status = QTableWidgetItem(status)
+            item_status.setForeground(Qt.GlobalColor.green if status.lower() == "ready" else Qt.GlobalColor.darkYellow)
+            self.table.setItem(r, 1, item_status)
+            
+            self.table.setItem(r, 2, QTableWidgetItem(t.get("Trigger", "Desconhecido")))
+            self.table.setItem(r, 3, QTableWidgetItem(t.get("LastRun", "N/A")))
+            self.table.setItem(r, 4, QTableWidgetItem(t.get("NextRun", "N/A")))
+            
+        self.table.setSortingEnabled(True)
+
+    @pyqtSlot(str, dict)
+    def _on_task_done(self, msg, data):
+        self.btn_schedule.setEnabled(True)
+        self.btn_schedule.setText("⏱ Agendar Tarefa no Alvo")
+        QMessageBox.information(self, "Concluído", data.get("Mensagem", msg))
+        self.fetch_tasks()
+
+    @pyqtSlot(str)
+    def _on_task_error(self, err_msg):
+        self.btn_schedule.setEnabled(True)
+        self.btn_schedule.setText("⏱ Agendar Tarefa no Alvo")
+        self.btn_fetch.setEnabled(True)
+        self.btn_fetch.setText("📋 Buscar Tarefas do Alvo")
+        self.btn_remove.setEnabled(True)
+        QMessageBox.critical(self, "Erro Remoto", err_msg)
