@@ -1,8 +1,14 @@
-# Encerra um processo à força.
-# Variáveis: {{pid}}, {{nome}}
+<#
+.SYNOPSIS
+    Encerra um processo à força (via Base64 para evitar quebras).
+#>
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+$ErrorActionPreference = 'Stop'
 
-$targetPid = [int]'{{pid}}'
-$targetName = '{{nome}}'
+# Descodifica os parâmetros blindados
+$targetPid = [int][System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{{pid_b64}}'))
+$targetName = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{{nome_b64}}'))
 
 $LogData = @{
     Script      = "Ação de Processo (Kill)"

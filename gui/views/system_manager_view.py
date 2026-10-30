@@ -1,5 +1,6 @@
 import json
 import os
+import base64
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QPushButton, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QGroupBox, 
@@ -13,7 +14,7 @@ from core.ps_loader import load_ps_template, PsTemplateError
 from gui.views.base_view import BaseView
 
 class EventDetailDialog(QDialog):
-    """Dialog para exibir detalhes completos de um evento (resumo ou tabela principal)."""
+    """Dialog para exibir detalhes completos de um evento."""
 
     def __init__(self, event_data, parent=None):
         super().__init__(parent)
@@ -24,7 +25,6 @@ class EventDetailDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
 
-        # --- Cabeçalho: campos estruturados ---
         info_grid = QGridLayout()
         info_grid.setHorizontalSpacing(20)
         info_grid.setVerticalSpacing(6)
@@ -50,7 +50,6 @@ class EventDetailDialog(QDialog):
 
         layout.addLayout(info_grid)
 
-        # --- Mensagem completa ---
         layout.addWidget(QLabel("<b>Mensagem completa:</b>"))
         txt_msg = QTextEdit()
         txt_msg.setReadOnly(True)
@@ -62,7 +61,6 @@ class EventDetailDialog(QDialog):
         )
         layout.addWidget(txt_msg)
 
-        # --- Botões ---
         btn_layout = QHBoxLayout()
         btn_copy = QPushButton("📋 Copiar mensagem")
         btn_copy.setFixedHeight(32)
@@ -95,7 +93,6 @@ class EventDetailDialog(QDialog):
 
 
 def _get_level_color(event_data):
-    """Retorna cor hex para o nível do evento."""
     nivel = str(event_data.get("Nivel", "")).lower()
     if "critical" in nivel or "crítico" in nivel:
         return "#f44336"
@@ -115,20 +112,19 @@ class SysManagerWorker(QThread):
         self.action_type = action_type
         self.extra_params = extra_params or {}
 
-    def _build_script(self) -> str:
-        """Carrega e renderiza o template PS correspondente à ação.
+    def _b64(self, text):
+        """Função auxiliar para codificar parâmetros de forma segura."""
+        return base64.b64encode(str(text).encode('utf-8')).decode('ascii')
 
-        Levanta PsTemplateError se o template não existir — capturado pelo
-        run() e reportado como erro de UI.
-        """
+    def _build_script(self) -> str:
         if self.action_type == "get_processes":
             return load_ps_template("system_manager", "get_processes")
 
         if self.action_type == "kill_process":
             return load_ps_template(
                 "system_manager", "kill_process",
-                pid=self.extra_params.get("pid"),
-                nome=self.extra_params.get("name", "Desconhecido"),
+                pid_b64=self._b64(self.extra_params.get("pid")),
+                nome_b64=self._b64(self.extra_params.get("name", "Desconhecido")),
             )
 
         if self.action_type == "get_services":
@@ -139,9 +135,9 @@ class SysManagerWorker(QThread):
             acao_pt = {"Start": "iniciado", "Stop": "parado", "Restart": "reiniciado"}.get(str(action), action)
             return load_ps_template(
                 "system_manager", "manage_service",
-                svc_name=self.extra_params.get("name"),
-                action=action,
-                acao_pt=acao_pt,
+                svc_name_b64=self._b64(self.extra_params.get("name")),
+                action_b64=self._b64(action),
+                acao_pt_b64=self._b64(acao_pt),
             )
 
         if self.action_type == "get_critical_summary":
@@ -161,7 +157,6 @@ class SysManagerWorker(QThread):
         try:
             ps_script = self._build_script()
         except PsTemplateError as e:
-            # Erro de programação (template ausente) — reporta e não tenta conexão
             self.error.emit(f"Erro de configuração interna: {e}")
             return
 
@@ -310,10 +305,7 @@ class SystemManagerView(BaseView):
         ev_layout = QVBoxLayout(self.tab_events)
         ev_layout.setContentsMargins(12, 12, 12, 12)
         ev_layout.setSpacing(10)
-        ev_layout.setContentsMargins(5, 5, 5, 5)
-        ev_layout.setSpacing(6)
 
-        # ---- Painel de Resumo: Últimos 5 Críticos/Erros (System + Application) ----
         summary_header = QHBoxLayout()
         summary_header.setContentsMargins(0, 0, 0, 0)
         summary_header.setSpacing(12)
@@ -325,9 +317,7 @@ class SystemManagerView(BaseView):
         summary_header.addStretch()
 
         self.lbl_summary_status = QLabel("Não carregado.")
-        self.lbl_summary_status.setStyleSheet(
-            "color: #888; font-style: italic; font-size: 12px;"
-        )
+        self.lbl_summary_status.setStyleSheet("color: #888; font-style: italic; font-size: 12px;")
         summary_header.addWidget(self.lbl_summary_status)
 
         self.btn_refresh_summary = QPushButton("↻ Atualizar Resumo")
@@ -360,14 +350,11 @@ class SystemManagerView(BaseView):
         self.tbl_summary.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.tbl_summary.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.tbl_summary.cellDoubleClicked.connect(self._on_summary_double_click)
-        # Altura inicial mínima (será ajustada dinamicamente ao popular)
         self.tbl_summary.setFixedHeight(90)
         ev_layout.addWidget(self.tbl_summary)
 
-        # Espaçador visual entre o resumo e a seção de busca
         ev_layout.addSpacing(15)
 
-        # ---- Controles de busca de eventos ----
         ev_controls = QHBoxLayout()
         ev_controls.setSpacing(8)
 
@@ -446,19 +433,31 @@ class SystemManagerView(BaseView):
 
     def _on_summary_double_click(self, row, col):
         item = self.tbl_summary.item(row, 0)
-        if not item:
-            return
+        if not item: return
         event_data = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(event_data, dict):
             EventDetailDialog(event_data, parent=self).exec()
 
     def _on_events_double_click(self, row, col):
         item = self.tbl_events.item(row, 0)
-        if not item:
-            return
+        if not item: return
         event_data = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(event_data, dict):
             EventDetailDialog(event_data, parent=self).exec()
+
+    def _reset_buttons(self):
+        """Devolve os botões de ação ao estado normal após uma execução."""
+        self.btn_load_proc.setEnabled(True)
+        self.btn_load_proc.setText("↻ Listar Processos")
+        
+        self.btn_load_svc.setEnabled(True)
+        self.btn_load_svc.setText("↻ Listar Serviços")
+        
+        self.btn_load_events.setEnabled(True)
+        self.btn_load_events.setText("🔍 Buscar Eventos")
+        
+        self.btn_refresh_summary.setEnabled(True)
+        self.btn_refresh_summary.setText("↻ Atualizar Resumo")
 
     def run_worker(self, action_type, extra_params=None):
         target = self.inp_target.text().strip()
@@ -467,16 +466,33 @@ class SystemManagerView(BaseView):
             self.inp_target.setFocus()
             return
 
+        # Feedback Visual: Desativa o botão correspondente para evitar spam de cliques
         if action_type == "get_events":
             if not extra_params: extra_params = {}
             extra_params["log_name"] = self.cmb_ev_log.currentText()
             extra_params["level"] = self.cmb_ev_level.currentData()
             extra_params["max"] = self.cmb_ev_max.currentText()
+            self.btn_load_events.setEnabled(False)
+            self.btn_load_events.setText("Buscando...")
+        elif action_type == "get_processes":
+            self.btn_load_proc.setEnabled(False)
+            self.btn_load_proc.setText("Aguarde...")
+        elif action_type == "get_services":
+            self.btn_load_svc.setEnabled(False)
+            self.btn_load_svc.setText("Aguarde...")
+        elif action_type == "get_critical_summary":
+            self.btn_refresh_summary.setEnabled(False)
+            self.btn_refresh_summary.setText("Carregando...")
+            self.lbl_summary_status.setText("Consultando eventos recentes...")
 
         self.worker = SysManagerWorker(target, action_type, extra_params)
         self.worker.finished.connect(self.on_worker_finished)
-        self.worker.error.connect(lambda e: QMessageBox.critical(self, "Erro", str(e)))
+        self.worker.error.connect(self._on_worker_error)
         self.worker.start()
+        
+    def _on_worker_error(self, err):
+        self._reset_buttons()
+        QMessageBox.critical(self, "Erro Remoto", str(err))
 
     def kill_process(self):
         row = self.tbl_proc.currentRow()
@@ -502,57 +518,34 @@ class SystemManagerView(BaseView):
         self.run_worker("manage_service", {"name": name, "action": action})
 
     def load_critical_summary(self):
-        target = self.inp_target.text().strip()
-        if not target:
-            QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
-            self.inp_target.setFocus()
-            return
-
-        self.btn_refresh_summary.setEnabled(False)
-        self.btn_refresh_summary.setText("Carregando...")
-        self.lbl_summary_status.setText("Consultando eventos recentes...")
-        self.lbl_summary_status.setStyleSheet(
-            "color: #f0ad4e; font-style: italic; margin-right: 10px;"
-        )
-
         self.run_worker("get_critical_summary")
         
     def _adjust_summary_height(self):
-        """Ajusta altura da tabela resumo com base no conteúdo — sem scroll, sem corte."""
         rows = self.tbl_summary.rowCount()
         header_h = self.tbl_summary.horizontalHeader().height()
-        # Altura de linha: usa a real se existir alguma, senão assume 30px
         if rows > 0:
             row_h = self.tbl_summary.rowHeight(0) or 30
         else:
             row_h = 30
-        # Mostra pelo menos 1 linha vazia (feedback visual de "tabela existe")
         visible_rows = max(rows, 1)
         total = header_h + (row_h * visible_rows) + 4
         self.tbl_summary.setFixedHeight(total)
 
     def populate_critical_summary(self, data_list):
-        self.btn_refresh_summary.setEnabled(True)
-        self.btn_refresh_summary.setText("↻ Atualizar Resumo")
-
         self.tbl_summary.setSortingEnabled(False)
         self.tbl_summary.setRowCount(0)
 
         if not data_list:
             self.lbl_summary_status.setText("✓ Nenhum evento crítico/erro recente.")
-            self.lbl_summary_status.setStyleSheet(
-                "color: #4CAF50; font-style: italic; margin-right: 10px;"
-            )
+            self.lbl_summary_status.setStyleSheet("color: #4CAF50; font-style: italic; margin-right: 10px;")
             self._adjust_summary_height()
             return
 
         for e in data_list:
-            if not isinstance(e, dict):
-                continue
+            if not isinstance(e, dict): continue
             r = self.tbl_summary.rowCount()
             self.tbl_summary.insertRow(r)
 
-            # Guarda o dict completo na coluna 0 para o dialog de detalhes
             item_data = QTableWidgetItem(str(e.get("Data", "")))
             item_data.setData(Qt.ItemDataRole.UserRole, e)
             self.tbl_summary.setItem(r, 0, item_data)
@@ -572,24 +565,24 @@ class SystemManagerView(BaseView):
 
         self.tbl_summary.setSortingEnabled(True)
         self.lbl_summary_status.setText(f"{len(data_list)} evento(s) recente(s).")
-        self.lbl_summary_status.setStyleSheet(
-            "color: #888; font-style: italic; margin-right: 10px;"
-        )
+        self.lbl_summary_status.setStyleSheet("color: #888; font-style: italic; margin-right: 10px;")
 
         self._adjust_summary_height()
+
     def on_tab_changed(self, index):
-        """Auto-carrega o resumo de eventos quando o usuário entra na aba."""
-        if index == 2:  # ABA 3 — Logs de Eventos
+        if index == 2:
             if self.inp_target.text().strip() and self.tbl_summary.rowCount() == 0:
                 self.load_critical_summary()
                 
     def on_worker_finished(self, data_list, action_type):
-        
+        self._reset_buttons()
         executor = os.environ.get("USERNAME", "Desconhecido")
         target = self.inp_target.text().strip()
+        
         if action_type == "get_critical_summary":
             self.populate_critical_summary(data_list)
             return
+            
         if action_type in ["kill_process", "manage_service"]:
             log_dict = data_list[0] if data_list else {}
             status_final = log_dict.get("StatusFinal", "SUCESSO")
@@ -689,7 +682,6 @@ class SystemManagerView(BaseView):
                 except:
                     item_id.setData(Qt.ItemDataRole.EditRole, str(e.get("ID", "")))
                 
-                # Guarda o dict completo na coluna 0 para o dialog de detalhes
                 item_id.setData(Qt.ItemDataRole.UserRole, e)
                 self.tbl_events.setItem(r, 0, item_id)
                 self.tbl_events.setItem(r, 1, QTableWidgetItem(str(e.get("Data", ""))))

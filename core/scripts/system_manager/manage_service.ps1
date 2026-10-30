@@ -1,12 +1,14 @@
-# Inicia, para ou reinicia um serviço.
-# Variáveis: {{svc_name}}, {{action}} (Start|Stop|Restart), {{acao_pt}} (texto PT-BR)
-#
-# Nota: $action é variável (não literal) porque o cmdlet é composto em runtime
-#       via "& "${action}-Service"". Isso mantém o arquivo válido para o parser
-#       ANTES da substituição dos placeholders.
+<#
+.SYNOPSIS
+    Inicia, para ou reinicia um serviço de forma segura via Base64.
+#>
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+$ErrorActionPreference = 'Stop'
 
-$action = '{{action}}'
-$svcName = '{{svc_name}}'
+$action = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{{action_b64}}'))
+$svcName = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{{svc_name_b64}}'))
+$acaoPt = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{{acao_pt_b64}}'))
 
 $LogData = @{
     Script      = "Ação de Serviço ($action)"
@@ -17,7 +19,7 @@ $LogData = @{
         "Alvo: Serviço '$svcName'",
         "Comando executado: ${action}-Service -Name '$svcName' -Force"
     )
-    Mensagem = "O serviço '$svcName' foi {{acao_pt}} com sucesso."
+    Mensagem = "O serviço '$svcName' foi $acaoPt com sucesso."
 }
 
 try {
