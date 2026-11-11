@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QDialog, QListWidget, QListWidgetItem, QTextEdit,
     QFileDialog, QApplication
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from gui.dialogs.dialogs import CredentialDialog
 from core.credential_store import CredentialStore
 from core.remote_connection import RemoteConnectionManager
@@ -29,7 +29,7 @@ log = get_logger(__name__)
 
 
 def fix_mojibake(text: str) -> str:
-    """Repara textos UTF-8 que foram lidos incorretamente como CP1252/Latin-1 (ex: CÃ¢mera -> Câmera)."""
+    """Repara textos UTF-8 lidos incorretamente como CP1252/Latin-1 (ex: CÃ¢mera -> Câmera)."""
     if not text or not isinstance(text, str):
         return text or ""
     if "Ã" in text or "Â" in text:
@@ -176,7 +176,6 @@ class OnlineSearchDialog(QDialog):
                 found_local = False
 
                 if choco_exe:
-                    # Lista de argumentos com shell=False evita o bug de corte de aspas do cmd.exe
                     result = subprocess.run(
                         [choco_exe, "search", term, "--limit-output"],
                         capture_output=True,
@@ -188,7 +187,6 @@ class OnlineSearchDialog(QDialog):
                     found_local = self._parse_chocolatey(stdout, silent_if_empty=True)
 
                 if not found_local:
-                    # Fallback Automático via API REST Oficial da Nuvem (Funciona mesmo sem Chocolatey instalado na máquina do técnico)
                     self.lbl_aviso.setText("<i>🌐 Busca realizada via API Oficial do Chocolatey (Fallback Cloud ativo).</i>")
                     self._search_chocolatey_cloud_api(term)
                 else:
@@ -220,7 +218,6 @@ class OnlineSearchDialog(QDialog):
             self.setWindowTitle(titulo_original)
 
     def _search_chocolatey_cloud_api(self, term: str):
-        """Consulta a API OData do Chocolatey diretamente caso o técnico não tenha o choco local ou o CLI falhe."""
         try:
             safe_term = urllib.parse.quote(term)
             url = (
@@ -419,7 +416,6 @@ class CheckUpdatesWorker(QThread):
 
 
 class SoftwareView(BaseView):
-    # Padrões de pacotes nativos do sistema / Microsoft Store para o filtro rápido
     SYSTEM_APP_PATTERNS = (
         "msix\\",
         "microsoft.windows",
@@ -536,7 +532,7 @@ class SoftwareView(BaseView):
         self.status_table.setHorizontalHeaderLabels(["Computador Alvo", "Operação", "Início", "Fim", "Status Atual", "Resumo da Execução"])
         self.status_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.status_table.setColumnWidth(0, 130)
-        self.status_table.setColumnWidth(1, 150)
+        self.status_table.setColumnWidth(1, 200)
         self.status_table.setColumnWidth(2, 70)
         self.status_table.setColumnWidth(3, 70)
         self.status_table.setColumnWidth(4, 110)
@@ -727,7 +723,6 @@ class SoftwareView(BaseView):
         self.tabs.addTab(tab_drv, "3. Gestão de Drivers (Offline)")
 
     def export_inventory_csv(self):
-        """Exporta os softwares atualmente visíveis na tabela de inventário para um arquivo CSV."""
         if self.table.rowCount() == 0:
             QMessageBox.warning(self, "Aviso", "Liste o inventário de um computador antes de exportar.")
             return
@@ -747,7 +742,6 @@ class SoftwareView(BaseView):
 
         try:
             count = 0
-            # utf-8-sig adiciona BOM para o Microsoft Excel abrir acentos perfeitamente
             with open(file_path, mode="w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f, delimiter=";")
                 writer.writerow(["Computador", "ID do Pacote", "Nome do Software", "Versao Instalada", "Atualizacao Disponivel", "Motor/Origem"])
@@ -889,6 +883,7 @@ class SoftwareView(BaseView):
         if not target:
             return self.inp_target.setFocus()
 
+        engine = self.cmb_engine.currentText()
         offline = [
             self.tbl_offline.item(r, 0).text()
             for r in range(self.tbl_offline.rowCount())
@@ -905,7 +900,7 @@ class SoftwareView(BaseView):
 
             ps_script = load_ps_template(
                 "software", "software_install",
-                engine_b64=self._b64(self.cmb_engine.currentText()),
+                engine_b64=self._b64(engine),
                 share_root_b64=self._b64(self.SHARE_ROOT),
                 pacotes_online_b64=self._b64(pacotes_online_str),
                 pacotes_offline_b64=self._b64(pacotes_offline_str)
@@ -921,7 +916,15 @@ class SoftwareView(BaseView):
 
         todos = offline + online
         sufixo = ", ".join(todos[:3]) + (f" (+{len(todos)-3})" if len(todos) > 3 else "")
-        self._enqueue_task(target, f"Instalar: {sufixo}", ps_script, credentials=credentials)
+
+        if offline and online:
+            origem_lbl = f"Rede+{engine}"
+        elif offline:
+            origem_lbl = "Rede"
+        else:
+            origem_lbl = engine
+
+        self._enqueue_task(target, f"Instalar ({origem_lbl}): {sufixo}", ps_script, credentials=credentials)
 
     def execute_action(self, action):
         target, engine = self.inp_target.text().strip(), self.cmb_engine.currentText()
@@ -1133,41 +1136,44 @@ class SoftwareView(BaseView):
                 if chk:
                     chk.setChecked(False if self.table.isRowHidden(r) else c)
 
-    @pyqtSlot(str, object, object)
     def update_status_start(self, t, st, rs):
         try:
             st.setText("A Executar...")
             rs.setText("Executando operação remota... Aguarde.")
-        except RuntimeError:
+        except Exception:
             pass
 
-    @pyqtSlot(str, str, dict, object, object, object)
     def update_status_finish(self, t, s, j, st, rs, f):
         try:
-            st.setText(s)
+            j = j if isinstance(j, dict) else {}
+            status_final = str(j.get("StatusFinal", s or "Concluído"))
+            st.setText(status_final)
             f.setText(datetime.now().strftime("%H:%M:%S"))
-            st.setForeground(
-                Qt.GlobalColor.green if "SUCESSO" in s.upper() or j.get("StatusFinal") == "SUCESSO"
-                else Qt.GlobalColor.red if "ERRO" in s.upper() or "FALHA" in s.upper()
-                else Qt.GlobalColor.darkYellow
-            )
 
-            resumo = f"Status: {j.get('StatusFinal', 'Concluído')}"
-            if "PacotesProcessados" in j:
-                for pct in j.get("PacotesProcessados", []):
-                    log_txt = fix_mojibake(str(pct.get('Log', '')).strip())
-                    software_txt = fix_mojibake(str(pct.get('Software', '')).strip())
-                    resumo += f"\n- {software_txt}: {log_txt}"
+            st_upper = status_final.upper()
+            if "SUCESSO" in st_upper:
+                st.setForeground(Qt.GlobalColor.green)
+            elif "ERRO" in st_upper or "FALHA" in st_upper:
+                st.setForeground(Qt.GlobalColor.red)
+            else:
+                st.setForeground(Qt.GlobalColor.darkYellow)
+
+            resumo = f"Status: {status_final}"
+            if "PacotesProcessados" in j and isinstance(j["PacotesProcessados"], list):
+                for pct in j["PacotesProcessados"]:
+                    if isinstance(pct, dict):
+                        log_txt = fix_mojibake(str(pct.get("Log", "")).strip())
+                        software_txt = fix_mojibake(str(pct.get("Software", "")).strip())
+                        resumo += f"\n- {software_txt}: {log_txt}"
             if "Detalhes" in j:
                 d = j.get("Detalhes")
                 det_str = "\n".join(fix_mojibake(str(item)) for item in d) if isinstance(d, list) else fix_mojibake(str(d))
                 resumo += "\n" + det_str
             rs.setText(resumo)
             self.status_table.resizeRowToContents(st.row())
-        except RuntimeError:
-            pass
+        except Exception as exc:
+            log.error(f"Erro ao atualizar status_table: {exc}")
 
-    @pyqtSlot(str, str, object, object, object)
     def update_status_error(self, t, e, st, rs, f):
         try:
             st.setText("Erro de Execução")
@@ -1175,8 +1181,8 @@ class SoftwareView(BaseView):
             rs.setText(fix_mojibake(str(e)))
             f.setText(datetime.now().strftime("%H:%M:%S"))
             self.status_table.resizeRowToContents(st.row())
-        except RuntimeError:
-            pass
+        except Exception as exc:
+            log.error(f"Erro ao registrar falha na status_table: {exc}")
 
     def open_search_dialog(self):
         d = OnlineSearchDialog(engine=self.cmb_engine.currentText(), parent=self)

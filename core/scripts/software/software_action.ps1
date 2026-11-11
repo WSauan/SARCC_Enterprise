@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Ações de Update/Uninstall via Winget, Chocolatey, MSIX/AppX e Registry com modo Verbose.
+    Ações de Update/Uninstall via Winget, Chocolatey, MSIX/AppX e Registry com suporte a Copilot/Stubs.
 #>
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
@@ -46,13 +46,15 @@ try {
         $ts = (Get-Date).ToString('HH:mm:ss')
         $LogData.Detalhes += "[$ts] Iniciando $Action para o pacote: '$p'"
 
-        # 1. Tratamento nativo para pacotes MSIX / AppX da Microsoft Store / Sistema
-        if ($Action -eq "uninstall" -and $p -like "MSIX\*") {
-            $msixFull = $p -replace '^MSIX\\', ''
+        # 1. Tratamento nativo para pacotes MSIX / AppX ou pacotes Microsoft.Copilot
+        if ($Action -eq "uninstall" -and ($p -like "MSIX\*" -or $p -match "(?i)Copilot")) {
+            $msixFull = ($p -replace '^(MSIX|ARP)\\[^\\]+\\[^\\]+\\', '') -replace '^(MSIX|ARP)\\', ''
             $msixBase = ($msixFull -split '_')[0]
-            $LogData.Detalhes += "[$ts] Detectado pacote MSIX/AppX ('$msixBase'). Executando Remove-AppxPackage..."
+            $LogData.Detalhes += "[$ts] Verificando pacotes AppX/MSIX correspondentes a '$msixBase'..."
 
-            $appxList = @(Get-AppxPackage -AllUsers | Where-Object { $_.PackageFullName -eq $msixFull -or $_.Name -eq $msixBase })
+            $appxList = @(Get-AppxPackage -AllUsers | Where-Object {
+                $_.PackageFullName -eq $msixFull -or $_.Name -eq $msixBase -or ($p -match "(?i)Copilot" -and $_.Name -match "(?i)Copilot")
+            })
             $removedAppx = $false
 
             foreach ($appx in $appxList) {
@@ -71,7 +73,9 @@ try {
                 }
             }
 
-            $provList = @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.PackageName -eq $msixFull -or $_.DisplayName -eq $msixBase })
+            $provList = @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object {
+                $_.PackageName -eq $msixFull -or $_.DisplayName -eq $msixBase -or ($p -match "(?i)Copilot" -and $_.DisplayName -match "(?i)Copilot")
+            })
             foreach ($prov in $provList) {
                 try {
                     $null = Remove-AppxProvisionedPackage -Online -PackageName $prov.PackageName -ErrorAction Stop
@@ -82,11 +86,12 @@ try {
 
             if ($removedAppx) {
                 $LogData.PacotesProcessados += @{ Software = $p; Log = "Sucesso (AppX/MSIX)." }
-            } else {
+                continue
+            } elseif ($p -like "MSIX\*") {
                 $LogData.PacotesProcessados += @{ Software = $p; Log = "Bloqueado pelo SO ou ausente." }
                 $LogData.StatusFinal = "ALERTA/ERRO"
+                continue
             }
-            continue
         }
 
         # 2. Execução via Chocolatey
@@ -108,7 +113,7 @@ try {
             continue
         }
 
-        # 3. Execução via Winget (Invocação direta sem cmd.exe para evitar Acesso Negado)
+        # 3. Execução via Winget
         if (-not $wingetCmd) { throw "Winget não localizado na máquina alvo." }
 
         $outText = ""
@@ -127,7 +132,8 @@ try {
                 $cleanId = ($p -replace '^(ARP|MSIX)\\[^\\]+\\[^\\]+\\', '') -replace '^(ARP|MSIX)\\', ''
                 $regPaths = @(
                     "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
-                    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+                    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+                    "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
                 )
                 $regMatch = Get-ItemProperty $regPaths -ErrorAction SilentlyContinue | Where-Object {
                     $_.PSChildName -eq $cleanId -or $_.DisplayName -like "*$cleanId*"
@@ -143,11 +149,16 @@ try {
                             $exitCode = $pMsi.ExitCode
                             $LogData.Detalhes += "[$ts] msiexec /x $guid finalizado com ExitCode: $exitCode"
                         }
+                    } else {
+                        $cmdLine = if ($regMatch.QuietUninstallString) { $uStr } else { "$uStr /S /silent /quiet" }
+                        $pExe = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$cmdLine`"" -Wait -PassThru -NoNewWindow
+                        $exitCode = $pExe.ExitCode
+                        $LogData.Detalhes += "[$ts] UninstallString executado com ExitCode: $exitCode"
                     }
                 }
             }
 
-            # Fallback 2: Diretórios padrão (Com [regex]::Escape para nunca quebrar com barras '\')
+            # Fallback 2: Diretórios padrão (Com [regex]::Escape)
             if ($exitCode -notin @(0, 19, 1605, 3010) -and $outText -notmatch "(?i)Successfully|êxito|Sucesso") {
                 $LogData.Detalhes += "[$ts] Tentando busca de uninstall.exe em diretórios padrão..."
                 $uninstallPaths = @(
