@@ -1,13 +1,20 @@
 import os
+import csv
 import json
 import re
+import shutil
 import subprocess
+import base64
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
     QGroupBox, QComboBox, QMessageBox, QCheckBox, QAbstractItemView,
-    QTabWidget, QDialog, QListWidget, QListWidgetItem
+    QTabWidget, QDialog, QListWidget, QListWidgetItem, QTextEdit,
+    QFileDialog, QApplication
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
 from gui.dialogs.dialogs import CredentialDialog
@@ -20,12 +27,75 @@ from core.logger import get_logger
 
 log = get_logger(__name__)
 
+
+def fix_mojibake(text: str) -> str:
+    """Repara textos UTF-8 que foram lidos incorretamente como CP1252/Latin-1 (ex: CÃ¢mera -> Câmera)."""
+    if not text or not isinstance(text, str):
+        return text or ""
+    if "Ã" in text or "Â" in text:
+        try:
+            return text.encode("cp1252").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            try:
+                return text.encode("latin1").decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                return text
+    return text
+
+
+class ExecutionLogDialog(QDialog):
+    """Janela modal para visualizar o log verbose completo de uma execução."""
+    def __init__(self, target: str, operation: str, status: str, log_text: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Log Detalhado (Verbose) — {target}")
+        self.resize(780, 480)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
+        header = QLabel(f"<b>Alvo:</b> {target} &nbsp;|&nbsp; <b>Operação:</b> {operation} &nbsp;|&nbsp; <b>Status:</b> {status}")
+        header.setStyleSheet("font-size: 13px; color: #4a90e2;")
+        layout.addWidget(header)
+
+        self.txt_log = QTextEdit()
+        self.txt_log.setReadOnly(True)
+        self.txt_log.setPlainText(fix_mojibake(log_text))
+        self.txt_log.setStyleSheet(
+            "font-family: Consolas, monospace; font-size: 12px; "
+            "background-color: #121212; color: #e0e0e0; padding: 10px; border: 1px solid #444;"
+        )
+        layout.addWidget(self.txt_log)
+
+        btn_layout = QHBoxLayout()
+        btn_copy = QPushButton("📋 Copiar Log Completo")
+        btn_copy.setFixedHeight(32)
+        btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_copy.setStyleSheet("background-color: #5bc0de; color: black; font-weight: bold; padding: 0 15px; border-radius: 4px;")
+        btn_copy.clicked.connect(self._copy_log)
+        btn_layout.addWidget(btn_copy)
+
+        btn_layout.addStretch()
+
+        btn_close = QPushButton("Fechar")
+        btn_close.setFixedHeight(32)
+        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_close.setStyleSheet("background-color: #4a90e2; color: white; font-weight: bold; padding: 0 20px; border-radius: 4px;")
+        btn_close.clicked.connect(self.close)
+        btn_layout.addWidget(btn_close)
+        layout.addLayout(btn_layout)
+
+    def _copy_log(self):
+        QApplication.clipboard().setText(self.txt_log.toPlainText())
+        QMessageBox.information(self, "Copiado", "Log copiado para a área de transferência.")
+
+
 class OnlineSearchDialog(QDialog):
     def __init__(self, engine="Winget", parent=None):
         super().__init__(parent)
         self.engine = engine
         self.setWindowTitle(f"Pesquisar Pacotes Online ({self.engine})")
-        self.resize(650, 450)
+        self.resize(680, 470)
         self.selected_packages = []
         self._setup_ui()
 
@@ -36,7 +106,7 @@ class OnlineSearchDialog(QDialog):
         search_layout = QHBoxLayout()
         self.inp_search = QLineEdit()
         self.inp_search.setFixedHeight(32)
-        self.inp_search.setPlaceholderText(f"Digite o nome para buscar no {self.engine}...")
+        self.inp_search.setPlaceholderText(f"Digite o nome para buscar no {self.engine} (ex: brave, 7zip, vlc)...")
         self.inp_search.setStyleSheet("padding: 0 10px;")
         self.inp_search.returnPressed.connect(self.search_packages)
 
@@ -60,9 +130,9 @@ class OnlineSearchDialog(QDialog):
         layout.addWidget(self.table)
 
         btn_layout = QHBoxLayout()
-        lbl_aviso = QLabel(f"<i>Requisito: O {self.engine} deve estar instalado nesta máquina local.</i>")
-        lbl_aviso.setStyleSheet("color: #888;")
-        btn_layout.addWidget(lbl_aviso)
+        self.lbl_aviso = QLabel(f"<i>Motor selecionado: {self.engine} (Com fallback automático de nuvem).</i>")
+        self.lbl_aviso.setStyleSheet("color: #888;")
+        btn_layout.addWidget(self.lbl_aviso)
         btn_layout.addStretch()
 
         btn_add = QPushButton("➕ Adicionar Selecionados")
@@ -73,23 +143,73 @@ class OnlineSearchDialog(QDialog):
         btn_layout.addWidget(btn_add)
         layout.addLayout(btn_layout)
 
+    @staticmethod
+    def _find_choco_exe() -> str | None:
+        default_path = r"C:\ProgramData\chocolatey\bin\choco.exe"
+        if os.path.exists(default_path):
+            return default_path
+        return shutil.which("choco")
+
+    @staticmethod
+    def _find_winget_exe() -> str | None:
+        w = shutil.which("winget")
+        if w:
+            return w
+        local_app = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps\winget.exe")
+        if os.path.exists(local_app):
+            return local_app
+        return None
+
     def search_packages(self):
         term = self.inp_search.text().strip()
-        if not term: return
+        if not term:
+            return
 
         self.table.setRowCount(0)
         titulo_original = self.windowTitle()
         self.setWindowTitle(f"Buscando '{term}' no {self.engine}... Aguarde.")
+        QApplication.processEvents()
 
         try:
             if self.engine == "Chocolatey":
-                choco_path = r"C:\\ProgramData\\chocolatey\\bin\\choco.exe"
-                comando = f'"{choco_path}" search "{term}" -r'
-                result = subprocess.run(comando, capture_output=True, text=False, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                self._parse_chocolatey(self._smart_decode(result.stdout))
+                choco_exe = self._find_choco_exe()
+                found_local = False
+
+                if choco_exe:
+                    # Lista de argumentos com shell=False evita o bug de corte de aspas do cmd.exe
+                    result = subprocess.run(
+                        [choco_exe, "search", term, "--limit-output"],
+                        capture_output=True,
+                        text=False,
+                        shell=False,
+                        creationflags=subprocess.CREATE_NO_WINDOW
+                    )
+                    stdout = self._smart_decode(result.stdout)
+                    found_local = self._parse_chocolatey(stdout, silent_if_empty=True)
+
+                if not found_local:
+                    # Fallback Automático via API REST Oficial da Nuvem (Funciona mesmo sem Chocolatey instalado na máquina do técnico)
+                    self.lbl_aviso.setText("<i>🌐 Busca realizada via API Oficial do Chocolatey (Fallback Cloud ativo).</i>")
+                    self._search_chocolatey_cloud_api(term)
+                else:
+                    self.lbl_aviso.setText("<i>✔ Busca realizada via motor Chocolatey local.</i>")
             else:
-                comando = f'winget search "{term}" --accept-source-agreements --disable-interactivity'
-                result = subprocess.run(comando, capture_output=True, text=False, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                winget_exe = self._find_winget_exe()
+                if not winget_exe:
+                    QMessageBox.critical(
+                        self,
+                        "Winget Ausente",
+                        "O utilitário Winget (Instalador de Aplicativo da Microsoft) não foi encontrado na sua máquina local."
+                    )
+                    return
+
+                result = subprocess.run(
+                    [winget_exe, "search", term, "--source", "winget", "--accept-source-agreements", "--disable-interactivity"],
+                    capture_output=True,
+                    text=False,
+                    shell=False,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
                 stdout = self._smart_decode(result.stdout)
                 stderr = self._smart_decode(result.stderr)
                 if not stdout.strip():
@@ -99,16 +219,65 @@ class OnlineSearchDialog(QDialog):
         finally:
             self.setWindowTitle(titulo_original)
 
+    def _search_chocolatey_cloud_api(self, term: str):
+        """Consulta a API OData do Chocolatey diretamente caso o técnico não tenha o choco local ou o CLI falhe."""
+        try:
+            safe_term = urllib.parse.quote(term)
+            url = (
+                f"https://community.chocolatey.org/api/v2/Search()?"
+                f"$filter=IsLatestVersion&searchTerm='{safe_term}'&targetFramework=''&includePrerelease=false&$skip=0&$top=40"
+            )
+            req = urllib.request.Request(url, headers={"User-Agent": "SARCC-Enterprise/2.0"})
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                xml_data = resp.read().decode("utf-8", errors="replace")
+
+            root = ET.fromstring(xml_data)
+            ns = {
+                "atom": "http://www.w3.org/2005/Atom",
+                "d": "http://schemas.microsoft.com/ado/2007/08/dataservices",
+                "m": "http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+            }
+            entries = root.findall("atom:entry", ns)
+            encontrou = False
+
+            for entry in entries:
+                props = entry.find("m:properties", ns)
+                if props is None:
+                    continue
+                pkg_id_el = props.find("d:Id", ns)
+                title_el = props.find("d:Title", ns)
+                ver_el = props.find("d:Version", ns)
+
+                pkg_id = pkg_id_el.text.strip() if (pkg_id_el is not None and pkg_id_el.text) else ""
+                title = title_el.text.strip() if (title_el is not None and title_el.text) else pkg_id
+                ver = ver_el.text.strip() if (ver_el is not None and ver_el.text) else "-"
+
+                if pkg_id:
+                    encontrou = True
+                    row_pos = self.table.rowCount()
+                    self.table.insertRow(row_pos)
+                    self.table.setItem(row_pos, 0, QTableWidgetItem(pkg_id))
+                    self.table.setItem(row_pos, 1, QTableWidgetItem(title))
+                    self.table.setItem(row_pos, 2, QTableWidgetItem(ver))
+
+            if not encontrou:
+                QMessageBox.information(self, "Busca", f"Nenhum pacote encontrado para '{term}' no repositório do Chocolatey.")
+        except Exception as e:
+            QMessageBox.warning(self, "Erro na Busca Online", f"Não foi possível consultar o repositório do Chocolatey:\n{e}")
+
     @staticmethod
     def _smart_decode(raw_bytes) -> str:
-        if not raw_bytes: return ""
-        if isinstance(raw_bytes, str): return raw_bytes.strip()
+        if not raw_bytes:
+            return ""
+        if isinstance(raw_bytes, str):
+            return fix_mojibake(raw_bytes.strip())
         try:
-            text = raw_bytes.decode("utf-8")
-            if "\ufffd" in text: raise ValueError("Corrompido")
-            return text.strip()
+            return fix_mojibake(raw_bytes.decode("utf-8").strip())
         except (UnicodeDecodeError, ValueError):
-            return raw_bytes.decode("cp850", errors="replace").strip()
+            try:
+                return fix_mojibake(raw_bytes.decode("cp850").strip())
+            except (UnicodeDecodeError, ValueError):
+                return fix_mojibake(raw_bytes.decode("utf-8", errors="replace").strip())
 
     def _show_winget_diagnostic(self, stderr: str, returncode: int):
         low = (stderr or "").lower()
@@ -119,11 +288,12 @@ class OnlineSearchDialog(QDialog):
         else:
             QMessageBox.warning(self, "Sem retorno", f"Código: {returncode}\nstderr: {stderr[:500] if stderr else '(vazio)'}")
 
-    def _parse_chocolatey(self, stdout):
+    def _parse_chocolatey(self, stdout: str, silent_if_empty: bool = False) -> bool:
         if not stdout.strip():
-            QMessageBox.information(self, "Busca", "Nenhum pacote encontrado.")
-            return
-        linhas = stdout.split("\n")
+            if not silent_if_empty:
+                QMessageBox.information(self, "Busca", "Nenhum pacote encontrado.")
+            return False
+        linhas = stdout.splitlines()
         encontrou = False
         for linha in linhas:
             linha = linha.strip()
@@ -136,29 +306,34 @@ class OnlineSearchDialog(QDialog):
                     self.table.setItem(row_pos, 0, QTableWidgetItem(partes[0].strip()))
                     self.table.setItem(row_pos, 1, QTableWidgetItem(partes[0].strip()))
                     self.table.setItem(row_pos, 2, QTableWidgetItem(partes[1].strip()))
-        if not encontrou: QMessageBox.information(self, "Busca", "Nenhum pacote encontrado.")
+        if not encontrou and not silent_if_empty:
+            QMessageBox.information(self, "Busca", "Nenhum pacote encontrado.")
+        return encontrou
 
     def _parse_winget(self, stdout: str):
         linhas = stdout.splitlines()
         start_idx = -1
         for i, l in enumerate(linhas):
             if re.match(r"^[-─]{3,}", l.strip()):
-                start_idx = i + 1; break
+                start_idx = i + 1
+                break
         if start_idx == -1:
             for i, l in enumerate(linhas):
                 if re.search(r"\b(Id|Nome|Name|Versão|Version)\b", l) and "  " in l:
-                    start_idx = i + 2; break
+                    start_idx = i + 2
+                    break
         if start_idx == -1 or start_idx >= len(linhas):
             if re.search(r"(Nenhum|No package|Não foram|no packages)", stdout, re.I):
                 QMessageBox.information(self, "Busca", "Nenhum pacote encontrado.")
             else:
-                QMessageBox.warning(self, "Formato", f"Não foi possível parsear a saída.\n{stdout[:500]}")
+                QMessageBox.warning(self, "Formato", f"Não foi possível interpretar a saída.\n{stdout[:500]}")
             return
 
         encontrou = False
         for l in linhas[start_idx:]:
             stripped = l.strip()
-            if not stripped or stripped.startswith("-"): continue
+            if not stripped or stripped.startswith("-"):
+                continue
             partes = re.split(r"\s{2,}", stripped)
             if len(partes) < 3:
                 partes = [p.strip() for p in re.split(r"[|│]", stripped) if p.strip()]
@@ -167,16 +342,20 @@ class OnlineSearchDialog(QDialog):
                 row_pos = self.table.rowCount()
                 self.table.insertRow(row_pos)
                 self.table.setItem(row_pos, 0, QTableWidgetItem(partes[1]))
-                self.table.setItem(row_pos, 1, QTableWidgetItem(partes[0]))
+                self.table.setItem(row_pos, 1, QTableWidgetItem(fix_mojibake(partes[0])))
                 self.table.setItem(row_pos, 2, QTableWidgetItem(partes[2]))
-        if not encontrou: QMessageBox.warning(self, "Erro", "Nenhuma linha interpretada.")
+        if not encontrou:
+            QMessageBox.warning(self, "Erro", "Nenhuma linha interpretada.")
 
     def add_selected(self):
         selected_rows = set(index.row() for index in self.table.selectedIndexes())
         for row in selected_rows:
             self.selected_packages.append(self.table.item(row, 0).text())
-        if self.selected_packages: self.accept()
-        else: QMessageBox.warning(self, "Aviso", "Selecione um pacote.")
+        if self.selected_packages:
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Aviso", "Selecione um pacote.")
+
 
 class FetchSoftwareWorker(QThread):
     finished = pyqtSignal(list)
@@ -203,12 +382,14 @@ class FetchSoftwareWorker(QThread):
                     self.error.emit("Erro Crítico remoto.")
                     return
                 pacotes = json_data.get("Pacotes", []) if isinstance(json_data, dict) else []
-                if not isinstance(pacotes, list): pacotes = [pacotes]
+                if not isinstance(pacotes, list):
+                    pacotes = [pacotes]
                 self.finished.emit(pacotes)
             else:
                 self.error.emit(res.get("log_saida", "Erro de comunicação ao listar inventário."))
         except Exception as e:
             self.error.emit(str(e))
+
 
 class CheckUpdatesWorker(QThread):
     finished = pyqtSignal(dict)
@@ -236,7 +417,39 @@ class CheckUpdatesWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+
 class SoftwareView(BaseView):
+    # Padrões de pacotes nativos do sistema / Microsoft Store para o filtro rápido
+    SYSTEM_APP_PATTERNS = (
+        "msix\\",
+        "microsoft.windows",
+        "microsoft.zune",
+        "microsoft.vp9",
+        "microsoft.webmedia",
+        "microsoft.webp",
+        "microsoft.heif",
+        "microsoft.screensketch",
+        "microsoft.getstarted",
+        "microsoft.bing",
+        "microsoft.549981c3f5f10",
+        "microsoft.xbox",
+        "microsoft.gaming",
+        "microsoft.yourphone",
+        "microsoft.people",
+        "microsoft.todos",
+        "microsoft.powerautomate",
+        "microsoft.paint",
+        "microsoft.windowsalarms",
+        "microsoft.windowscalculator",
+        "microsoft.windowscamera",
+        "microsoft.windowscommunicationsapps",
+        "microsoft.windowsfeedbackhub",
+        "microsoft.windowsmaps",
+        "microsoft.windowsnotepad",
+        "microsoft.windowssoundrecorder",
+        "microsoft.windowsterminal",
+    )
+
     def __init__(self, main_window_ref=None):
         super().__init__(main_window_ref)
         self.queue_manager = getattr(main_window_ref, "queue_manager", None) or TaskQueueManager(max_threads=5)
@@ -306,7 +519,7 @@ class SoftwareView(BaseView):
         self.tabs.currentChanged.connect(self.on_tab_changed)
         layout.addWidget(self.tabs, stretch=1)
 
-        status_group = QGroupBox("Acompanhamento de Execução Remota")
+        status_group = QGroupBox("Acompanhamento de Execução Remota (Duplo clique na linha para abrir Log Verbose)")
         status_layout = QVBoxLayout(status_group)
         status_layout.setContentsMargins(10, 15, 10, 10)
 
@@ -330,7 +543,9 @@ class SoftwareView(BaseView):
         self.status_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.status_table.setWordWrap(True)
         self.status_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.status_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.status_table.setMaximumHeight(160)
+        self.status_table.cellDoubleClicked.connect(self._open_verbose_log_dialog)
         status_layout.addWidget(self.status_table)
         layout.addWidget(status_group)
 
@@ -348,17 +563,26 @@ class SoftwareView(BaseView):
         actions_layout = QHBoxLayout()
         self.btn_upgrade = QPushButton("⭐ Atualizar Selecionados")
         self.btn_upgrade.setFixedHeight(32)
+        self.btn_upgrade.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_upgrade.setStyleSheet("background-color: #1e8a5e; color: white; padding: 0 15px; font-weight: bold; border-radius: 4px;")
         self.btn_upgrade.clicked.connect(lambda: self.execute_action("upgrade"))
 
         self.btn_uninstall = QPushButton("🗑 Desinstalar Selecionados")
         self.btn_uninstall.setFixedHeight(32)
+        self.btn_uninstall.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_uninstall.setStyleSheet("background-color: #d9534f; color: white; padding: 0 15px; font-weight: bold; border-radius: 4px;")
         self.btn_uninstall.clicked.connect(lambda: self.execute_action("uninstall"))
+
+        self.btn_export_inv = QPushButton("📥 Exportar Lista (CSV)")
+        self.btn_export_inv.setFixedHeight(32)
+        self.btn_export_inv.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_export_inv.setStyleSheet("background-color: #5bc0de; color: black; padding: 0 15px; font-weight: bold; border-radius: 4px;")
+        self.btn_export_inv.clicked.connect(self.export_inventory_csv)
 
         actions_layout.addWidget(self.btn_upgrade)
         actions_layout.addWidget(self.btn_uninstall)
         actions_layout.addStretch()
+        actions_layout.addWidget(self.btn_export_inv)
         inv_layout.addLayout(actions_layout)
 
         filter_layout = QHBoxLayout()
@@ -368,8 +592,14 @@ class SoftwareView(BaseView):
         filter_layout.addWidget(self.chk_select_all)
 
         self.chk_force_close = QCheckBox("🔪 Fechar apps antes de atualizar")
-        self.chk_force_close.setStyleSheet("font-weight: bold; color: #d9534f; margin-left: 15px;")
+        self.chk_force_close.setStyleSheet("font-weight: bold; color: #d9534f; margin-left: 10px;")
         filter_layout.addWidget(self.chk_force_close)
+
+        self.chk_hide_system = QCheckBox("🚫 Ocultar Apps do Sistema (MSIX/Windows)")
+        self.chk_hide_system.setStyleSheet("font-weight: bold; color: #5bc0de; margin-left: 10px;")
+        self.chk_hide_system.stateChanged.connect(self.apply_filters)
+        filter_layout.addWidget(self.chk_hide_system)
+
         filter_layout.addStretch()
 
         self.chk_only_updates = QCheckBox("⬆️ Só com atualização")
@@ -379,7 +609,7 @@ class SoftwareView(BaseView):
 
         self.inp_filter = QLineEdit()
         self.inp_filter.setFixedHeight(32)
-        self.inp_filter.setPlaceholderText("Buscar...")
+        self.inp_filter.setPlaceholderText("🔍 Filtrar por nome ou ID...")
         self.inp_filter.textChanged.connect(self.apply_filters)
         filter_layout.addWidget(self.inp_filter)
         inv_layout.addLayout(filter_layout)
@@ -388,8 +618,8 @@ class SoftwareView(BaseView):
         self.table.setHorizontalHeaderLabels(["[ ]", "ID do Pacote", "Nome do Software", "Versão", "Nova Versão", "Origem"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.setColumnWidth(0, 40)
-        self.table.setColumnWidth(1, 180)
-        self.table.setColumnWidth(2, 250)
+        self.table.setColumnWidth(1, 210)
+        self.table.setColumnWidth(2, 260)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -422,12 +652,12 @@ class SoftwareView(BaseView):
         winget_layout = QVBoxLayout(frame_winget)
         self.inp_custom_soft = QLineEdit()
         self.inp_custom_soft.setFixedHeight(32)
-        self.inp_custom_soft.setPlaceholderText("IDs separados por vírgula...")
-        
+        self.inp_custom_soft.setPlaceholderText("IDs separados por vírgula (ex: VideoLAN.VLC, Brave.Brave)...")
+
         self.btn_search_online = QPushButton("🔍 Pesquisar ID")
         self.btn_search_online.setFixedHeight(32)
         self.btn_search_online.clicked.connect(self.open_search_dialog)
-        
+
         l_pesq = QHBoxLayout()
         l_pesq.addWidget(self.inp_custom_soft)
         l_pesq.addWidget(self.btn_search_online)
@@ -455,7 +685,8 @@ class SoftwareView(BaseView):
         self.list_coleta = QListWidget()
         self.list_coleta.setStyleSheet("background-color: transparent; border: 1px solid #444;")
         for name, cls in self.cat_map.items():
-            if cls == "Todos": continue
+            if cls == "Todos":
+                continue
             item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Unchecked)
@@ -477,7 +708,8 @@ class SoftwareView(BaseView):
         self.list_deploy = QListWidget()
         self.list_deploy.setStyleSheet("background-color: transparent; border: 1px solid #444;")
         for name, cls in self.cat_map.items():
-            if cls == "Todos": continue
+            if cls == "Todos":
+                continue
             item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Unchecked)
@@ -493,6 +725,55 @@ class SoftwareView(BaseView):
         drv_layout.addWidget(frame_deploy)
 
         self.tabs.addTab(tab_drv, "3. Gestão de Drivers (Offline)")
+
+    def export_inventory_csv(self):
+        """Exporta os softwares atualmente visíveis na tabela de inventário para um arquivo CSV."""
+        if self.table.rowCount() == 0:
+            QMessageBox.warning(self, "Aviso", "Liste o inventário de um computador antes de exportar.")
+            return
+
+        target = self.inp_target.text().strip() or "ENDPOINT"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"Inventario_Softwares_{target}_{timestamp}.csv"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Exportar Inventário de Softwares",
+            default_name,
+            "Arquivo CSV (*.csv);;Arquivo de Texto (*.txt)"
+        )
+        if not file_path:
+            return
+
+        try:
+            count = 0
+            # utf-8-sig adiciona BOM para o Microsoft Excel abrir acentos perfeitamente
+            with open(file_path, mode="w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f, delimiter=";")
+                writer.writerow(["Computador", "ID do Pacote", "Nome do Software", "Versao Instalada", "Atualizacao Disponivel", "Motor/Origem"])
+
+                for r in range(self.table.rowCount()):
+                    if self.table.isRowHidden(r):
+                        continue
+                    pkg_id = self.table.item(r, 1).text() if self.table.item(r, 1) else ""
+                    name = self.table.item(r, 2).text() if self.table.item(r, 2) else ""
+                    ver = self.table.item(r, 3).text() if self.table.item(r, 3) else ""
+                    avail = self.table.item(r, 4).text() if self.table.item(r, 4) else ""
+                    orig = self.table.item(r, 5).text() if self.table.item(r, 5) else ""
+                    writer.writerow([target, pkg_id, name, ver, avail, orig])
+                    count += 1
+
+            QMessageBox.information(self, "Exportação Concluída", f"{count} software(s) exportado(s) com sucesso para:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Erro ao Exportar", f"Falha ao salvar o arquivo:\n{e}")
+
+    def _open_verbose_log_dialog(self, row, col):
+        target = self.status_table.item(row, 0).text() if self.status_table.item(row, 0) else "N/A"
+        op = self.status_table.item(row, 1).text() if self.status_table.item(row, 1) else "N/A"
+        st = self.status_table.item(row, 4).text() if self.status_table.item(row, 4) else "N/A"
+        resumo_item = self.status_table.item(row, 5)
+        log_text = resumo_item.text() if resumo_item else "Sem detalhes registrados."
+        ExecutionLogDialog(target, op, st, log_text, parent=self).exec()
 
     def coletar_drivers(self):
         target = self.inp_target.text().strip()
@@ -520,7 +801,8 @@ class SoftwareView(BaseView):
         credentials = None
         if not self._is_local_target(target):
             credentials = self._get_credentials()
-            if credentials is None: return
+            if credentials is None:
+                return
 
         reply = QMessageBox.question(self, "Confirmação", f"Coletar de {target}?")
         if reply == QMessageBox.StandardButton.Yes:
@@ -552,12 +834,13 @@ class SoftwareView(BaseView):
         credentials = None
         if not self._is_local_target(target):
             credentials = self._get_credentials()
-            if credentials is None: return
+            if credentials is None:
+                return
 
         reply = QMessageBox.question(self, "Confirmação", f"Instalar em {target}?")
         if reply == QMessageBox.StandardButton.Yes:
             self._enqueue_task(target, f"Deploy Drivers ({len(categorias)} cats)", ps_script, credentials=credentials)
-            
+
     def _clear_status_table(self):
         linhas_para_remover = []
         for r in range(self.status_table.rowCount()):
@@ -571,20 +854,25 @@ class SoftwareView(BaseView):
         cached = getattr(self.main_window, 'get_cached_credentials', None)
         if cached:
             c = cached()
-            if c: return c
+            if c:
+                return c
         saved = CredentialStore.load()
         if saved:
             s = getattr(self.main_window, 'set_cached_credentials', None)
-            if s: s(saved["user"], saved["pass"])
+            if s:
+                s(saved["user"], saved["pass"])
             return saved
 
         dominio, usuario = os.environ.get("USERDOMAIN", ""), os.environ.get("USERNAME", "")
         dlg = CredentialDialog(user_display=f"{dominio}\\{usuario}", has_saved=False, parent=self)
-        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.password: return None
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.password:
+            return None
 
-        if dlg.remember: CredentialStore.save(f"{dominio}\\{usuario}", dlg.password)
+        if dlg.remember:
+            CredentialStore.save(f"{dominio}\\{usuario}", dlg.password)
         s = getattr(self.main_window, 'set_cached_credentials', None)
-        if s: s(f"{dominio}\\{usuario}", dlg.password)
+        if s:
+            s(f"{dominio}\\{usuario}", dlg.password)
         return {"user": f"{dominio}\\{usuario}", "pass": dlg.password, "vnc_pass": dlg.password}
 
     @staticmethod
@@ -593,39 +881,72 @@ class SoftwareView(BaseView):
         t = (target or "").strip().lower()
         return t in ("localhost", "127.0.0.1", "::1", socket.gethostname().lower())
 
+    def _b64(self, text):
+        return base64.b64encode(str(text).encode('utf-8')).decode('ascii')
+
     def start_software_install(self):
         target = self.inp_target.text().strip()
-        if not target: return self.inp_target.setFocus()
+        if not target:
+            return self.inp_target.setFocus()
 
-        offline = [self.tbl_offline.item(r, 0).text() for r in range(self.tbl_offline.rowCount()) if self.tbl_offline.item(r, 0).checkState() == Qt.CheckState.Checked]
+        offline = [
+            self.tbl_offline.item(r, 0).text()
+            for r in range(self.tbl_offline.rowCount())
+            if self.tbl_offline.item(r, 0).checkState() == Qt.CheckState.Checked
+        ]
         online = [s.strip() for s in self.inp_custom_soft.text().split(",") if s.strip()]
 
         if not offline and not online:
             return QMessageBox.warning(self, "Aviso", "Selecione pacotes para instalar.")
 
         try:
-            ps_script = load_ps_template("software", "software_install", engine=self.cmb_engine.currentText(), share_root=self.SHARE_ROOT, pacotes_online=",".join(f"'{p}'" for p in online) if online else "", pacotes_offline=",".join(f"'{p}'" for p in offline) if offline else "")
+            pacotes_online_str = ",".join(online) if online else ""
+            pacotes_offline_str = ",".join(offline) if offline else ""
+
+            ps_script = load_ps_template(
+                "software", "software_install",
+                engine_b64=self._b64(self.cmb_engine.currentText()),
+                share_root_b64=self._b64(self.SHARE_ROOT),
+                pacotes_online_b64=self._b64(pacotes_online_str),
+                pacotes_offline_b64=self._b64(pacotes_offline_str)
+            )
         except PsTemplateError as e:
             return QMessageBox.critical(self, "Erro", f"Template ausente: {e}")
 
         credentials = None
         if offline and not self._is_local_target(target):
             credentials = self._get_credentials()
-            if credentials is None: return
+            if credentials is None:
+                return
 
         todos = offline + online
-        sufixo = ", ".join(todos[:3]) + (f" (+{len(todos)-3})" if len(todos)>3 else "")
+        sufixo = ", ".join(todos[:3]) + (f" (+{len(todos)-3})" if len(todos) > 3 else "")
         self._enqueue_task(target, f"Instalar: {sufixo}", ps_script, credentials=credentials)
 
     def execute_action(self, action):
         target, engine = self.inp_target.text().strip(), self.cmb_engine.currentText()
-        if not target: return self.inp_target.setFocus()
+        if not target:
+            return self.inp_target.setFocus()
 
-        pkgs = [f"'{self.table.item(r, 1).text()}'" for r in range(self.table.rowCount()) if self.table.cellWidget(r, 0) and self.table.cellWidget(r, 0).findChild(QCheckBox).isChecked()]
-        if not pkgs: return QMessageBox.warning(self, "Aviso", "Selecione pacotes.")
+        pkgs = [
+            self.table.item(r, 1).text()
+            for r in range(self.table.rowCount())
+            if self.table.cellWidget(r, 0) and self.table.cellWidget(r, 0).findChild(QCheckBox).isChecked()
+        ]
+        if not pkgs:
+            return QMessageBox.warning(self, "Aviso", "Selecione pacotes.")
 
         try:
-            ps_script = load_ps_template("software", "software_action", action=action, engine=engine, force_flag="--force" if (self.chk_force_close.isChecked() and action == "upgrade") else "", pacotes=",".join(pkgs))
+            pacotes_str = ",".join(pkgs)
+            force_flag = "--force" if (self.chk_force_close.isChecked() and action == "upgrade") else ""
+
+            ps_script = load_ps_template(
+                "software", "software_action",
+                action_b64=self._b64(action),
+                engine_b64=self._b64(engine),
+                force_flag_b64=self._b64(force_flag),
+                pacotes_b64=self._b64(pacotes_str)
+            )
         except PsTemplateError as e:
             return QMessageBox.critical(self, "Erro", f"Template ausente: {e}")
 
@@ -636,15 +957,15 @@ class SoftwareView(BaseView):
     def _enqueue_task(self, target, title, ps_script, credentials=None):
         r = self.status_table.rowCount()
         self.status_table.insertRow(r)
-        
+
         i_inicio = QTableWidgetItem(datetime.now().strftime("%H:%M:%S"))
         i_fim = QTableWidgetItem("-")
         i_inicio.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         i_fim.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        
+
         i_status = QTableWidgetItem("Pendente (Na fila)...")
         i_resumo = QTableWidgetItem("Aguardando processo...")
-        
+
         self.status_table.setItem(r, 0, QTableWidgetItem(target))
         self.status_table.setItem(r, 1, QTableWidgetItem(title))
         self.status_table.setItem(r, 2, i_inicio)
@@ -667,23 +988,52 @@ class SoftwareView(BaseView):
         self.inp_filter.clear()
         self.table.setSortingEnabled(True)
 
+    def _is_system_app(self, pkg_id: str, pkg_name: str) -> bool:
+        low_id = (pkg_id or "").lower()
+        low_name = (pkg_name or "").lower()
+        for pat in self.SYSTEM_APP_PATTERNS:
+            if low_id.startswith(pat) or pat in low_id:
+                return True
+        if low_id.startswith("msix\\") or "redistributable" in low_name or "edge webview2" in low_name:
+            return True
+        return False
+
     def apply_filters(self, *args):
-        t, o = self.inp_filter.text().lower().strip(), self.chk_only_updates.isChecked()
+        t = self.inp_filter.text().lower().strip()
+        only_upd = self.chk_only_updates.isChecked()
+        hide_sys = self.chk_hide_system.isChecked()
+
         for r in range(self.table.rowCount()):
-            m = not t
+            id_item = self.table.item(r, 1)
+            name_item = self.table.item(r, 2)
+            id_txt = id_item.text() if id_item else ""
+            name_txt = name_item.text() if name_item else ""
+
+            match = True
             if t:
-                id_i, name_i = self.table.item(r, 1), self.table.item(r, 2)
-                m = (id_i and t in id_i.text().lower()) or (name_i and t in name_i.text().lower())
-            if m and o:
+                match = (t in id_txt.lower()) or (t in name_txt.lower())
+
+            if match and hide_sys:
+                if self._is_system_app(id_txt, name_txt):
+                    match = False
+
+            if match and only_upd:
                 av = self.table.item(r, 4)
-                if not av or av.text().strip() in ["-", ""]: m = False
-            self.table.setRowHidden(r, not m)
-        if o: self.chk_only_updates.setText(f"⬆️ Só com atualização ({sum(1 for r in range(self.table.rowCount()) if not self.table.isRowHidden(r))})")
-        else: self.chk_only_updates.setText("⬆️ Só com atualização")
+                if not av or av.text().strip() in ["-", ""]:
+                    match = False
+
+            self.table.setRowHidden(r, not match)
+
+        visible_count = sum(1 for r in range(self.table.rowCount()) if not self.table.isRowHidden(r))
+        if only_upd:
+            self.chk_only_updates.setText(f"⬆️ Só com atualização ({visible_count})")
+        else:
+            self.chk_only_updates.setText("⬆️ Só com atualização")
 
     def fetch_software(self):
         target, engine = self.inp_target.text().strip(), self.cmb_engine.currentText()
-        if not target: return self.inp_target.setFocus()
+        if not target:
+            return self.inp_target.setFocus()
         self.btn_fetch.setEnabled(False)
         self.btn_check_updates.setEnabled(False)
         self.btn_fetch.setText(f"Lendo {engine}...")
@@ -697,32 +1047,41 @@ class SoftwareView(BaseView):
     def populate_table(self, pkgs_list):
         self.table.setSortingEnabled(False)
         for pkg in pkgs_list:
-            if not isinstance(pkg, dict) or pkg.get("Name") == "Nenhum software encontrado": continue
+            if not isinstance(pkg, dict) or pkg.get("Name") == "Nenhum software encontrado":
+                continue
             r = self.table.rowCount()
             self.table.insertRow(r)
-            
+
             chk_w = QWidget()
             chk_l = QHBoxLayout(chk_w)
             chk_l.addWidget(QCheckBox())
             chk_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
             chk_l.setContentsMargins(0, 0, 0, 0)
-            
+
+            clean_id = fix_mojibake(str(pkg.get("Id", "-")))
+            clean_name = fix_mojibake(str(pkg.get("Name", "Desconhecido")))
+
             self.table.setItem(r, 0, QTableWidgetItem(""))
             self.table.setCellWidget(r, 0, chk_w)
-            self.table.setItem(r, 1, QTableWidgetItem(pkg.get("Id", "-")))
-            self.table.setItem(r, 2, QTableWidgetItem(pkg.get("Name", "Desconhecido")))
-            self.table.setItem(r, 3, QTableWidgetItem(pkg.get("Version", "-")))
-            
+            self.table.setItem(r, 1, QTableWidgetItem(clean_id))
+            self.table.setItem(r, 2, QTableWidgetItem(clean_name))
+            self.table.setItem(r, 3, QTableWidgetItem(str(pkg.get("Version", "-"))))
+
             av = (pkg.get("Available", "") or "").strip()
             item_av = QTableWidgetItem(av if av else "-")
-            if av: item_av.setForeground(Qt.GlobalColor.green)
+            if av:
+                item_av.setForeground(Qt.GlobalColor.green)
             self.table.setItem(r, 4, item_av)
-            
+
             orig = pkg.get("Origin", "Winget")
             item_orig = QTableWidgetItem(orig)
-            item_orig.setForeground(Qt.GlobalColor.cyan if orig == "Chocolatey" else Qt.GlobalColor.yellow if orig == "Windows Registry" else Qt.GlobalColor.green)
+            item_orig.setForeground(
+                Qt.GlobalColor.cyan if orig == "Chocolatey"
+                else Qt.GlobalColor.yellow if orig == "Windows Registry"
+                else Qt.GlobalColor.green
+            )
             self.table.setItem(r, 5, item_orig)
-            
+
         self.table.setSortingEnabled(True)
         self.btn_fetch.setEnabled(True)
         self.btn_check_updates.setEnabled(True)
@@ -730,7 +1089,8 @@ class SoftwareView(BaseView):
         self.apply_filters()
 
     def check_updates(self):
-        if self.table.rowCount() == 0: return QMessageBox.warning(self, "Aviso", "Liste os softwares primeiro.")
+        if self.table.rowCount() == 0:
+            return QMessageBox.warning(self, "Aviso", "Liste os softwares primeiro.")
         self.btn_fetch.setEnabled(False)
         self.btn_check_updates.setEnabled(False)
         self.btn_check_updates.setText("Buscando...")
@@ -744,8 +1104,9 @@ class SoftwareView(BaseView):
         self.btn_fetch.setEnabled(True)
         self.btn_check_updates.setEnabled(True)
         self.btn_check_updates.setText("🔎 Verificar Atualizações")
-        if not updates_dict: return QMessageBox.information(self, "Atualizações", "Nenhuma atualização encontrada.")
-        
+        if not updates_dict:
+            return QMessageBox.information(self, "Atualizações", "Nenhuma atualização encontrada.")
+
         upd_lower = {k.lower(): v for k, v in updates_dict.items()}
         for r in range(self.table.rowCount()):
             id_item = self.table.item(r, 1)
@@ -759,9 +1120,9 @@ class SoftwareView(BaseView):
     def show_error(self, err):
         self.btn_fetch.setEnabled(True)
         self.btn_check_updates.setEnabled(True)
-        self.btn_fetch.setText("🔄 Listar Softwares")
+        self.btn_fetch.setText("🔄 Listar Softwares (Inventário)")
         self.btn_check_updates.setText("🔎 Verificar Atualizações")
-        QMessageBox.critical(self, "Erro", f"Falha na comunicação:\n{err}")
+        QMessageBox.critical(self, "Erro", f"Falha na comunicação:\n{fix_mojibake(str(err))}")
 
     def toggle_select_all(self, state):
         c = state == Qt.CheckState.Checked.value
@@ -769,36 +1130,53 @@ class SoftwareView(BaseView):
             w = self.table.cellWidget(r, 0)
             if w:
                 chk = w.findChild(QCheckBox)
-                if chk: chk.setChecked(False if self.table.isRowHidden(r) else c)
+                if chk:
+                    chk.setChecked(False if self.table.isRowHidden(r) else c)
 
     @pyqtSlot(str, object, object)
     def update_status_start(self, t, st, rs):
         try:
-            st.setText("A Executar..."); rs.setText("Aguarde...")
-        except RuntimeError: pass
+            st.setText("A Executar...")
+            rs.setText("Executando operação remota... Aguarde.")
+        except RuntimeError:
+            pass
 
     @pyqtSlot(str, str, dict, object, object, object)
     def update_status_finish(self, t, s, j, st, rs, f):
         try:
-            st.setText(s); f.setText(datetime.now().strftime("%H:%M:%S"))
-            st.setForeground(Qt.GlobalColor.green if "SUCESSO" in s.upper() or j.get("StatusFinal")=="SUCESSO" else Qt.GlobalColor.red if "ERRO" in s.upper() or "FALHA" in s.upper() else Qt.GlobalColor.darkYellow)
-            
+            st.setText(s)
+            f.setText(datetime.now().strftime("%H:%M:%S"))
+            st.setForeground(
+                Qt.GlobalColor.green if "SUCESSO" in s.upper() or j.get("StatusFinal") == "SUCESSO"
+                else Qt.GlobalColor.red if "ERRO" in s.upper() or "FALHA" in s.upper()
+                else Qt.GlobalColor.darkYellow
+            )
+
             resumo = f"Status: {j.get('StatusFinal', 'Concluído')}"
             if "PacotesProcessados" in j:
-                for pct in j.get("PacotesProcessados", []): resumo += f"\n- {pct.get('Software', '')}: {pct.get('Log', '')}"
+                for pct in j.get("PacotesProcessados", []):
+                    log_txt = fix_mojibake(str(pct.get('Log', '')).strip())
+                    software_txt = fix_mojibake(str(pct.get('Software', '')).strip())
+                    resumo += f"\n- {software_txt}: {log_txt}"
             if "Detalhes" in j:
                 d = j.get("Detalhes")
-                resumo += "\n" + ("\n".join(d) if isinstance(d, list) else str(d))
+                det_str = "\n".join(fix_mojibake(str(item)) for item in d) if isinstance(d, list) else fix_mojibake(str(d))
+                resumo += "\n" + det_str
             rs.setText(resumo)
             self.status_table.resizeRowToContents(st.row())
-        except RuntimeError: pass
+        except RuntimeError:
+            pass
 
     @pyqtSlot(str, str, object, object, object)
     def update_status_error(self, t, e, st, rs, f):
         try:
-            st.setText("Erro de Execução"); st.setForeground(Qt.GlobalColor.red); rs.setText(e); f.setText(datetime.now().strftime("%H:%M:%S"))
+            st.setText("Erro de Execução")
+            st.setForeground(Qt.GlobalColor.red)
+            rs.setText(fix_mojibake(str(e)))
+            f.setText(datetime.now().strftime("%H:%M:%S"))
             self.status_table.resizeRowToContents(st.row())
-        except RuntimeError: pass
+        except RuntimeError:
+            pass
 
     def open_search_dialog(self):
         d = OnlineSearchDialog(engine=self.cmb_engine.currentText(), parent=self)
@@ -809,15 +1187,21 @@ class SoftwareView(BaseView):
     def carregar_softwares_da_rede(self):
         self.tbl_offline.setRowCount(0)
         try:
-            if not os.path.exists(self.network_software_path): return QMessageBox.warning(self, "Aviso", "Caminho inacessível.")
+            if not os.path.exists(self.network_software_path):
+                return QMessageBox.warning(self, "Aviso", "Caminho inacessível.")
             arqs = [f for f in os.listdir(self.network_software_path) if f.lower().endswith((".msi", ".exe"))]
             for a in sorted(arqs):
                 r = self.tbl_offline.rowCount()
                 self.tbl_offline.insertRow(r)
-                it = QTableWidgetItem(a); it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable); it.setCheckState(Qt.CheckState.Unchecked)
-                s = QTableWidgetItem(f"{os.path.getsize(os.path.join(self.network_software_path, a)) / (1024 * 1024):.1f} MB"); s.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.tbl_offline.setItem(r, 0, it); self.tbl_offline.setItem(r, 1, s)
-        except Exception as e: QMessageBox.critical(self, "Erro", str(e))
+                it = QTableWidgetItem(a)
+                it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                it.setCheckState(Qt.CheckState.Unchecked)
+                s = QTableWidgetItem(f"{os.path.getsize(os.path.join(self.network_software_path, a)) / (1024 * 1024):.1f} MB")
+                s.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.tbl_offline.setItem(r, 0, it)
+                self.tbl_offline.setItem(r, 1, s)
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", str(e))
 
     def showEvent(self, event):
         super().showEvent(event)
