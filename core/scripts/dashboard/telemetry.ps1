@@ -1,8 +1,9 @@
 <#
 .SYNOPSIS
-    Telemetria Ultra-Rápida para o Dashboard.
-    (Removido 'quser' para evitar lentidão e timeout na Sessão 0)
+    Telemetria Ultra-Rápida para o Dashboard com detecção híbrida (WMI + C:\Users) de perfis e pastas TEMP*.
 #>
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $ErrorActionPreference = 'SilentlyContinue'
 
 # 1. Armazenamento
@@ -12,43 +13,108 @@ $used = if ($drive) { [math]::Round($drive.Used / 1GB, 2) } else { 0 }
 $total = [math]::Round($free + $used, 2)
 $pct = if ($total -gt 0) { [math]::Round(($used / $total) * 100, 1) } else { 0 }
 
-# 2. Perfis e Sessões (Reescrito para precisão e velocidade extrema)
+# 2. Perfis e Sessões (Híbrido: Win32_UserProfile + Pastas Físicas em C:\Users)
 $profilesList = @()
 $loggedNames = @()
+$seenNames = @{}
+$ignoredFolders = @(
+    'public', 'público', 'publico',
+    'default', 'default user', 'defaultuser0', 'usuário padrão', 'usuario padrao',
+    'all users', 'todos os usuários', 'todos os usuarios',
+    'defaultapppool', 'MSSQL$SQLEXPRESS'
+)
 
-$profilesRaw = Get-CimInstance Win32_UserProfile -Filter "Special = False" -ErrorAction SilentlyContinue | Where-Object { $_.LocalPath -match '^C:\\Users\\' -and $_.LocalPath -notmatch 'Public|Público|Default' }
+$profilesRaw = @(Get-CimInstance Win32_UserProfile -Filter "Special = False" -ErrorAction SilentlyContinue | Where-Object {
+    (-not [string]::IsNullOrWhiteSpace($_.LocalPath)) -and
+    ($_.LocalPath -match '^[A-Za-z]:\\Users\\')
+})
+
 foreach ($p in $profilesRaw) {
-    $name = (Split-Path $p.LocalPath -Leaf)
+    $name = Split-Path -Path $p.LocalPath -Leaf -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($name)) { continue }
+    $nameLower = $name.ToLower()
+    if ($ignoredFolders -contains $nameLower) { continue }
+
+    $lastUseDate = $null
     $lastUseStr = "N/A"
-    
+
     if ($p.LastUseTime) {
-        $lastUseDate = [datetime]$p.LastUseTime
-        $lastUseStr = $lastUseDate.ToString('yyyy-MM-dd HH:mm')
+        try {
+            $lastUseDate = [datetime]$p.LastUseTime
+            $lastUseStr = $lastUseDate.ToString('yyyy-MM-dd HH:mm')
+        } catch { }
     }
 
-    # Só adiciona utilizadores que usaram a máquina no último ano
-    if ($lastUseDate -and ($lastUseDate -gt (Get-Date).AddYears(-1))) {
-        $profilesList += [PSCustomObject]@{ Name = $name; LastUse = $lastUseStr; Loaded = [bool]$p.Loaded }
-        # Se Loaded = True, o utilizador está com sessão aberta agora.
-        if ([bool]$p.Loaded) {
-            $loggedNames += $name
+    if (-not $lastUseDate -and (Test-Path -LiteralPath $p.LocalPath)) {
+        try {
+            $itemFolder = Get-Item -LiteralPath $p.LocalPath -Force -ErrorAction SilentlyContinue
+            if ($itemFolder -and $itemFolder.LastWriteTime) {
+                $lastUseDate = [datetime]$itemFolder.LastWriteTime
+                $lastUseStr = $lastUseDate.ToString('yyyy-MM-dd HH:mm')
+            }
+        } catch { }
+    }
+
+    $isLoaded = [bool]$p.Loaded
+    $isTemp = [bool]($name -match '^(?i)TEMP(\.|$)')
+
+    $seenNames[$nameLower] = $true
+    $profilesList += [PSCustomObject]@{
+        Name    = $name
+        LastUse = $lastUseStr
+        Loaded  = $isLoaded
+        IsTemp  = $isTemp
+    }
+
+    if ($isLoaded) {
+        $loggedNames += $name
+    }
+}
+
+# Varre pastas físicas reais em C:\Users (ignorando Junctions/Symlinks como 'Todos os Usuários' e 'Usuário Padrão')
+$usersRoot = "$env:SystemDrive\Users"
+if (Test-Path -LiteralPath $usersRoot) {
+    $diskFolders = @(Get-ChildItem -LiteralPath $usersRoot -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
+        (($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) -and
+        (($_.Attributes -band [System.IO.FileAttributes]::System) -eq 0)
+    })
+    foreach ($folder in $diskFolders) {
+        $fName = $folder.Name
+        if ([string]::IsNullOrWhiteSpace($fName)) { continue }
+        $fLower = $fName.ToLower()
+
+        if ($ignoredFolders -contains $fLower) { continue }
+        if ($seenNames.ContainsKey($fLower)) { continue }
+
+        $seenNames[$fLower] = $true
+        $isTempFolder = [bool]($fName -match '^(?i)TEMP(\.|$)')
+        $fLastUse = if ($folder.LastWriteTime) { $folder.LastWriteTime.ToString('yyyy-MM-dd HH:mm') } else { "N/A" }
+
+        $profilesList += [PSCustomObject]@{
+            Name    = $fName
+            LastUse = $fLastUse
+            Loaded  = $false
+            IsTemp  = $isTempFolder
         }
     }
 }
+
+$tempProfilesCount = @($profilesList | Where-Object { $_.IsTemp -eq $true }).Count
+$normalProfilesCount = @($profilesList | Where-Object { $_.IsTemp -eq $false }).Count
 $profiles = $profilesList.Count
 $loggedUsers = $loggedNames.Count
 
 # 3. OS e Rede
 $os = Get-CimInstance Win32_OperatingSystem -Property Caption, LastBootUpTime, TotalVisibleMemorySize, FreePhysicalMemory -ErrorAction SilentlyContinue
 $uptimeStr = "N/A"
-if ($os) {
+if ($os -and $os.LastBootUpTime) {
     $up = (Get-Date) - $os.LastBootUpTime
     $uptimeStr = "$($up.Days)d $($up.Hours)h $($up.Minutes)m"
 }
 
 $net = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled = 'True'" -Property IPAddress, MACAddress -ErrorAction SilentlyContinue | Select-Object -First 1
-$ip = if ($net) { $net.IPAddress[0] } else { "N/A" }
-$mac = if ($net) { $net.MACAddress } else { "N/A" }
+$ip = if ($net -and $net.IPAddress) { $net.IPAddress[0] } else { "N/A" }
+$mac = if ($net -and $net.MACAddress) { $net.MACAddress } else { "N/A" }
 
 # 4. Hardware
 $cpu = Get-CimInstance Win32_Processor -Property Name, LoadPercentage -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -69,7 +135,7 @@ $ramPct = if ($totalRamGB -gt 0) { [math]::Round(($usedRamGB / $totalRamGB) * 10
 # 5. Segurança
 $av = "Windows Defender (Nativo)"
 $avInfo = Get-CimInstance -Namespace "root\SecurityCenter2" -ClassName "AntivirusProduct" -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($avInfo) { $av = $avInfo.displayName }
+if ($avInfo -and $avInfo.displayName) { $av = $avInfo.displayName }
 
 $actStatus = "Não Ativado"
 $sl = Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL" -ErrorAction SilentlyContinue | Where-Object { $_.ApplicationId -eq '55c92734-d682-4d71-983e-d6ec3f16059f' } | Select-Object -First 1
@@ -90,7 +156,11 @@ if (Test-Path $sysConf) {
     $match = Select-String -Path $sysConf -Pattern "^ad\.anynet\.id=(\d+)" -ErrorAction SilentlyContinue
     if ($match) {
         $rawId = $match.Matches.Groups[1].Value
-        $anydeskId = '{0} {1} {2}' -f $rawId.Substring(0,3), $rawId.Substring(3,3), $rawId.Substring(6)
+        if ($rawId.Length -ge 9) {
+            $anydeskId = '{0} {1} {2}' -f $rawId.Substring(0,3), $rawId.Substring(3,3), $rawId.Substring(6)
+        } else {
+            $anydeskId = $rawId
+        }
     }
 } elseif (Test-Path "C:\Program Files (x86)\AnyDesk\AnyDesk.exe") { $anydeskId = "Instalado" }
 
@@ -118,7 +188,7 @@ if ($wingetExe) {
         $fv = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($wingetExe)
         if ($fv.FileVersion) { $wgVer = $fv.FileVersion } elseif ($fv.ProductVersion) { $wgVer = $fv.ProductVersion }
     } catch { }
-    
+
     if ($wgVer) {
         $wgVer = $wgVer -replace '\.0+$', ''
         if ($wgVer -notmatch '^v') { $wgVer = "v$wgVer" }
@@ -142,34 +212,36 @@ $rebootStatus = if ($rebootPending) { "Pendente (" + ($rebootReasons -join ", ")
 
 # Resultado
 [PSCustomObject]@{
-    HostName = $env:COMPUTERNAME
-    OSVersion = if ($os) { $os.Caption } else { "N/A" }
-    Activation = $actStatus
-    CPUModel = $cpuModel
-    CPUUsage = if ($cpu) { $cpu.LoadPercentage } else { 0 }
-    CPUTemp = $cpuTempStr
-    TotalRAM = $totalRamGB
-    UsedRAM = $usedRamGB
-    RAMPct = $ramPct
-    AVProduct = $av
-    DiskTotal = $total
-    DiskFree = $free
-    DiskUsed = $used
-    DiskPct = $pct
-    ProfilesCount = $profiles
-    LoggedUsers = $loggedUsers
-    ProfilesList = @($profilesList)
-    LoggedNames = @($loggedNames)
-    IP = $ip
-    MAC = $mac
-    Uptime = $uptimeStr
-    RDP = $rdpStatus
-    VNC = $vncStatus
-    WOL = $wolStatus
-    AnyDesk = $anydeskId
-    Zabbix = $zabbixStatus
-    GLPI = $glpiStatus
-    DesktopInfo = $dinfoStatus
-    Winget = $wingetStatus
-    RebootPending = $rebootStatus
-} | ConvertTo-Json -Compress
+    HostName            = $env:COMPUTERNAME
+    OSVersion           = if ($os) { $os.Caption } else { "N/A" }
+    Activation          = $actStatus
+    CPUModel            = $cpuModel
+    CPUUsage            = if ($cpu) { $cpu.LoadPercentage } else { 0 }
+    CPUTemp             = $cpuTempStr
+    TotalRAM            = $totalRamGB
+    UsedRAM             = $usedRamGB
+    RAMPct              = $ramPct
+    AVProduct           = $av
+    DiskTotal           = $total
+    DiskFree            = $free
+    DiskUsed            = $used
+    DiskPct             = $pct
+    ProfilesCount       = $profiles
+    NormalProfilesCount = $normalProfilesCount
+    TempProfilesCount   = $tempProfilesCount
+    LoggedUsers         = $loggedUsers
+    ProfilesList        = @($profilesList)
+    LoggedNames         = @($loggedNames)
+    IP                  = $ip
+    MAC                 = $mac
+    Uptime              = $uptimeStr
+    RDP                 = $rdpStatus
+    VNC                 = $vncStatus
+    WOL                 = $wolStatus
+    AnyDesk             = $anydeskId
+    Zabbix              = $zabbixStatus
+    GLPI                = $glpiStatus
+    DesktopInfo         = $dinfoStatus
+    Winget              = $wingetStatus
+    RebootPending       = $rebootStatus
+} | ConvertTo-Json -Depth 4 -Compress

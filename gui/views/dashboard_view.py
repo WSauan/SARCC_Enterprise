@@ -4,10 +4,12 @@ import subprocess
 import socket
 import time
 from datetime import datetime
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QLineEdit, QPushButton, QGroupBox, 
-                             QGridLayout, QTextEdit, QComboBox, QMessageBox, QProgressBar, QScrollArea, QInputDialog,
-                             QDialog, QTableWidget, QTableWidgetItem, QHeaderView)
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QGroupBox,
+    QGridLayout, QTextEdit, QComboBox, QMessageBox, QProgressBar, QScrollArea, QInputDialog,
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox
+)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from core.remote_connection import RemoteConnectionManager
@@ -31,68 +33,79 @@ def _format_last_use(dt_str: str) -> str:
         return f"Hoje {dt.strftime('%H:%M')}"
     if delta.days == 1:
         return f"Ontem {dt.strftime('%H:%M')}"
-    if delta.days < 7:
+    if 0 < delta.days < 7:
         return f"{delta.days} dias atrás"
     return dt.strftime("%d/%m/%Y")
 
 
+def _is_temp_profile(profile_dict: dict) -> bool:
+    """Identifica se o perfil é temporário (TEMP / TEMP.*)."""
+    if not isinstance(profile_dict, dict):
+        return False
+    if profile_dict.get("IsTemp") is True:
+        return True
+    name = str(profile_dict.get("Name", "")).strip().upper()
+    return name == "TEMP" or name.startswith("TEMP.")
+
+
+def _sort_profiles(profiles: list, logged_names: set) -> list:
+    """Ordena: 1º Logados, 2º Normais por acesso mais recente, 3º Perfis TEMP*."""
+    def sort_key(p):
+        name = p.get("Name", "")
+        is_logged = 1 if name in logged_names else 0
+        is_normal = 0 if _is_temp_profile(p) else 1
+        last_use = p.get("LastUse", "") or ""
+        if last_use == "N/A":
+            last_use = ""
+        return (is_logged, is_normal, last_use)
+
+    return sorted(profiles, key=sort_key, reverse=True)
+
+
 class ProfilesDialog(QDialog):
-    """Lista completa de perfis de usuário do endpoint alvo."""
+    """Lista completa de perfis de usuário (Normais + Temporários) do endpoint alvo."""
 
     def __init__(self, profiles: list, logged_names: set, target_pc: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Perfis de Usuário — {target_pc}")
-        self.resize(560, 480)
+        self.resize(620, 500)
+        self.all_profiles = profiles
+        self.logged_names = logged_names
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
+        temp_count = sum(1 for p in profiles if _is_temp_profile(p))
+        normal_count = len(profiles) - temp_count
+
+        header_layout = QHBoxLayout()
         info = QLabel(
-            f"<b>{len(profiles)}</b> perfil(is) — "
-            f"<b>{len(logged_names)}</b> conectado(s) agora."
+            f"<b>Total: {len(profiles)}</b> &nbsp;|&nbsp; "
+            f"Normais: <b>{normal_count}</b> &nbsp;|&nbsp; "
+            f"<span style='color: #f0ad4e;'>Temporários (TEMP*): <b>{temp_count}</b></span> &nbsp;|&nbsp; "
+            f"<span style='color: #4CAF50;'>Logados: <b>{len(logged_names)}</b></span>"
         )
         info.setStyleSheet("font-size: 13px;")
-        layout.addWidget(info)
+        header_layout.addWidget(info)
+        header_layout.addStretch()
+
+        self.chk_hide_temp = QCheckBox("Ocultar pastas TEMP*")
+        self.chk_hide_temp.setStyleSheet("font-weight: bold; color: #5bc0de;")
+        self.chk_hide_temp.stateChanged.connect(self._apply_filter)
+        header_layout.addWidget(self.chk_hide_temp)
+        layout.addLayout(header_layout)
 
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Usuário", "Último Acesso", "Status"])
+        self.table.setHorizontalHeaderLabels(["Usuário / Pasta", "Último Acesso", "Status"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
-        
-        # Desligar a ordenação ANTES de preencher a tabela
-        self.table.setSortingEnabled(False)
 
-        # Ordena: logados primeiro, depois por último acesso mais recente
-        def sort_key(p):
-            is_logged = p.get("Name", "") in logged_names
-            return (not is_logged, p.get("LastUse", "") or "")
-        profiles_sorted = sorted(profiles, key=sort_key)
-
-        for p in profiles_sorted:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-
-            name_item = QTableWidgetItem(p.get("Name", "?"))
-            self.table.setItem(row, 0, name_item)
-
-            last_use_item = QTableWidgetItem(_format_last_use(p.get("LastUse", "N/A")))
-            last_use_item.setData(Qt.ItemDataRole.UserRole, p.get("LastUse", ""))
-            self.table.setItem(row, 1, last_use_item)
-
-            is_logged = p.get("Name", "") in logged_names
-            status_item = QTableWidgetItem("🟢 Logado" if is_logged else "⚪ Inativo")
-            if is_logged:
-                status_item.setForeground(Qt.GlobalColor.green)
-            self.table.setItem(row, 2, status_item)
-
-        # Ligar a ordenação APENAS DEPOIS de preencher tudo
-        self.table.setSortingEnabled(True)
-
+        self._populate()
         layout.addWidget(self.table)
 
         btn_close = QPushButton("Fechar")
@@ -109,6 +122,47 @@ class ProfilesDialog(QDialog):
         btn_layout.addWidget(btn_close)
         layout.addLayout(btn_layout)
 
+    def _populate(self):
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+
+        profiles_sorted = _sort_profiles(self.all_profiles, self.logged_names)
+
+        for p in profiles_sorted:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            name = p.get("Name", "?")
+            is_temp = _is_temp_profile(p)
+            is_logged = name in self.logged_names
+
+            name_item = QTableWidgetItem(name)
+            name_item.setData(Qt.ItemDataRole.UserRole, is_temp)
+            self.table.setItem(row, 0, name_item)
+
+            last_use_item = QTableWidgetItem(_format_last_use(p.get("LastUse", "N/A")))
+            last_use_item.setData(Qt.ItemDataRole.UserRole, p.get("LastUse", ""))
+            self.table.setItem(row, 1, last_use_item)
+
+            if is_logged:
+                status_item = QTableWidgetItem("🟢 Logado")
+                status_item.setForeground(Qt.GlobalColor.green)
+            elif is_temp:
+                status_item = QTableWidgetItem("🟠 Temp / Órfão")
+                status_item.setForeground(Qt.GlobalColor.yellow)
+            else:
+                status_item = QTableWidgetItem("⚪ Inativo")
+            self.table.setItem(row, 2, status_item)
+
+        self.table.setSortingEnabled(True)
+
+    def _apply_filter(self):
+        hide_temp = self.chk_hide_temp.isChecked()
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            is_temp = bool(item.data(Qt.ItemDataRole.UserRole)) if item else False
+            self.table.setRowHidden(r, hide_temp and is_temp)
+
 
 class PingTrackerWorker(QThread):
     success = pyqtSignal(str)
@@ -120,7 +174,11 @@ class PingTrackerWorker(QThread):
 
     def run(self):
         for _ in range(60):
-            res = subprocess.run(f"ping -n 1 -w 1000 {self.target_pc}", capture_output=True, text=True, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            res = subprocess.run(
+                f"ping -n 1 -w 1000 {self.target_pc}",
+                capture_output=True, text=True, shell=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
             if "TTL=" in res.stdout:
                 self.success.emit(self.target_pc)
                 return
@@ -148,7 +206,7 @@ class TelemetryWorker(QThread):
 
             conn = RemoteConnectionManager()
             res = conn.execute_script(self.target_pc, ps_script)
-            
+
             if self.is_cancelled:
                 return
 
@@ -183,13 +241,13 @@ class DashboardView(BaseView):
         target_group = QGroupBox("Computador Alvo (Telemetria)")
         target_layout = QHBoxLayout(target_group)
         target_layout.setContentsMargins(15, 20, 15, 15)
-        
+
         self.inp_target = QLineEdit()
         self.inp_target.setFixedHeight(32)
         self.inp_target.setPlaceholderText("Ex: HUL-WK-244377E ou 10.8.128.14")
         self.inp_target.setStyleSheet("padding: 0 10px;")
         self.inp_target.textChanged.connect(self._force_uppercase)
-        
+
         self.btn_fetch = QPushButton("🔄 Carregar Telemetria")
         self.btn_fetch.setFixedHeight(32)
         self.btn_fetch.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -209,12 +267,12 @@ class DashboardView(BaseView):
         action_layout = QHBoxLayout(action_group)
         action_layout.setContentsMargins(15, 20, 15, 15)
         action_layout.setSpacing(10)
-        
+
         self.cmb_remote = QComboBox()
         self.cmb_remote.setFixedHeight(32)
         self.cmb_remote.addItems(["RDP (Windows)", "VNC Viewer", "AnyDesk", "Assistência Rápida"])
         self.cmb_remote.setStyleSheet("padding: 0 10px; font-weight: bold;")
-        
+
         self.btn_connect = QPushButton("▶ Conectar")
         self.btn_connect.setFixedHeight(32)
         self.btn_connect.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -226,25 +284,25 @@ class DashboardView(BaseView):
         self.btn_wol.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_wol.setStyleSheet("background-color: #5cb85c; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;")
         self.btn_wol.clicked.connect(self.action_wol)
-        
+
         self.btn_logoff = QPushButton("👤 Forçar Logoff")
         self.btn_logoff.setFixedHeight(32)
         self.btn_logoff.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_logoff.setStyleSheet("background-color: #f0ad4e; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;")
         self.btn_logoff.clicked.connect(lambda: self.action_power("logoff"))
-        
+
         self.btn_restart = QPushButton("🔄 Reiniciar")
         self.btn_restart.setFixedHeight(32)
         self.btn_restart.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_restart.setStyleSheet("background-color: #d9534f; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;")
         self.btn_restart.clicked.connect(lambda: self.action_power("restart"))
-        
+
         self.btn_shutdown = QPushButton("🔌 Desligar")
         self.btn_shutdown.setFixedHeight(32)
         self.btn_shutdown.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_shutdown.setStyleSheet("background-color: #292b2c; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;")
         self.btn_shutdown.clicked.connect(lambda: self.action_power("shutdown"))
-        
+
         action_layout.addWidget(self.cmb_remote)
         action_layout.addWidget(self.btn_connect)
         action_layout.addWidget(self.btn_wol)
@@ -252,13 +310,13 @@ class DashboardView(BaseView):
         action_layout.addWidget(self.btn_logoff)
         action_layout.addWidget(self.btn_restart)
         action_layout.addWidget(self.btn_shutdown)
-        
+
         main_layout.addWidget(action_group)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("border: none; background: transparent;")
-        
+
         container = QWidget()
         content_layout = QVBoxLayout(container)
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -272,17 +330,17 @@ class DashboardView(BaseView):
         self.card_sys = QGroupBox("🌐 Informações do Sistema")
         sys_layout = QVBoxLayout(self.card_sys)
         sys_layout.setContentsMargins(15, 20, 15, 15)
-        
+
         sys_grid = QGridLayout()
         sys_grid.setSpacing(8)
-        
+
         self.lbl_hostname = QLabel("Hostname: -")
         self.lbl_os = QLabel("SO: -")
-        self.lbl_uptime = QLabel("Uptime: -") 
+        self.lbl_uptime = QLabel("Uptime: -")
         self.lbl_ip = QLabel("IP (Ethernet/Wi-Fi): -")
         self.lbl_mac = QLabel("MAC Address: -")
         self.lbl_av = QLabel("Antivírus: -")
-        
+
         self.lbl_rdp = QLabel("RDP: -")
         self.lbl_vnc = QLabel("VNC: -")
         self.lbl_anydesk = QLabel("AnyDesk ID: -")
@@ -293,8 +351,8 @@ class DashboardView(BaseView):
         self.lbl_winget = QLabel("Winget: -")
         self.lbl_reboot = QLabel("Reboot: -")
 
-        for lbl in [self.lbl_hostname, self.lbl_os, self.lbl_uptime, self.lbl_ip, self.lbl_mac, 
-                    self.lbl_av, self.lbl_rdp, self.lbl_vnc, self.lbl_anydesk, self.lbl_wol, 
+        for lbl in [self.lbl_hostname, self.lbl_os, self.lbl_uptime, self.lbl_ip, self.lbl_mac,
+                    self.lbl_av, self.lbl_rdp, self.lbl_vnc, self.lbl_anydesk, self.lbl_wol,
                     self.lbl_zabbix, self.lbl_glpi, self.lbl_desktopinfo, self.lbl_winget, self.lbl_reboot]:
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
@@ -313,8 +371,8 @@ class DashboardView(BaseView):
         sys_grid.addWidget(self.lbl_wol, 3, 1)
         sys_grid.addWidget(self.lbl_zabbix, 4, 1)
         sys_grid.addWidget(self.lbl_glpi, 5, 1)
-        sys_grid.addWidget(self.lbl_desktopinfo, 6, 1) 
-        
+        sys_grid.addWidget(self.lbl_desktopinfo, 6, 1)
+
         sys_layout.addLayout(sys_grid)
         grid_cards.addWidget(self.card_sys, 0, 0)
 
@@ -379,12 +437,12 @@ class DashboardView(BaseView):
         self.card_resources = QGroupBox("⚙️ Recursos do Sistema (Disco, CPU, RAM)")
         res_layout = QVBoxLayout(self.card_resources)
         res_layout.setContentsMargins(15, 20, 15, 15)
-        
+
         self.lbl_storage_info = QLabel("Disco C:: Aguardando leitura...")
         self.prog_storage = QProgressBar()
         self.prog_storage.setValue(0)
         self.prog_storage.setStyleSheet(self._get_bar_style(0))
-        
+
         self.lbl_cpu_info = QLabel("CPU: Aguardando leitura...")
         self.prog_cpu = QProgressBar()
         self.prog_cpu.setValue(0)
@@ -394,7 +452,7 @@ class DashboardView(BaseView):
         self.prog_temp = QProgressBar()
         self.prog_temp.setValue(0)
         self.prog_temp.setStyleSheet(self._get_bar_style(0, is_temp=True))
-        
+
         self.lbl_ram_info = QLabel("RAM: Aguardando leitura...")
         self.prog_ram = QProgressBar()
         self.prog_ram.setValue(0)
@@ -403,28 +461,28 @@ class DashboardView(BaseView):
         res_layout.addWidget(self.lbl_storage_info)
         res_layout.addWidget(self.prog_storage)
         res_layout.addSpacing(10)
-        
+
         cpu_horiz = QHBoxLayout()
         cpu_horiz.setSpacing(15)
-        
+
         v_cpu = QVBoxLayout()
         v_cpu.setSpacing(5)
         v_cpu.addWidget(self.lbl_cpu_info)
         v_cpu.addWidget(self.prog_cpu)
-        
+
         v_temp = QVBoxLayout()
         v_temp.setSpacing(5)
         v_temp.addWidget(self.lbl_temp_info)
         v_temp.addWidget(self.prog_temp)
-        
+
         cpu_horiz.addLayout(v_cpu, stretch=1)
         cpu_horiz.addLayout(v_temp, stretch=1)
         res_layout.addLayout(cpu_horiz)
-        
+
         res_layout.addSpacing(10)
         res_layout.addWidget(self.lbl_ram_info)
         res_layout.addWidget(self.prog_ram)
-        
+
         bottom_panels.addWidget(self.card_resources, stretch=65)
 
         lic_group = QGroupBox("🔑 Licenciamento (KMS)")
@@ -457,7 +515,7 @@ class DashboardView(BaseView):
         lic_layout.addWidget(self.btn_apply_key)
 
         lic_layout.addStretch()
-        
+
         bottom_panels.addWidget(lic_group, stretch=35)
         content_layout.addLayout(bottom_panels)
 
@@ -466,16 +524,16 @@ class DashboardView(BaseView):
 
     def _get_bar_style(self, val, is_temp=False, disabled=False):
         if disabled:
-            color = "#666666" 
+            color = "#666666"
         elif is_temp:
-            if val >= 85: color = "#d9534f" 
-            elif val >= 70: color = "#f0ad4e" 
-            else: color = "#1e8a5e" 
+            if val >= 85: color = "#d9534f"
+            elif val >= 70: color = "#f0ad4e"
+            else: color = "#1e8a5e"
         else:
-            if val >= 90: color = "#d9534f" 
-            elif val >= 75: color = "#f0ad4e" 
-            else: color = "#1e8a5e" 
-            
+            if val >= 90: color = "#d9534f"
+            elif val >= 75: color = "#f0ad4e"
+            else: color = "#1e8a5e"
+
         return f"QProgressBar {{ border: 1px solid #444; color: white; font-weight: bold; border-radius: 4px; text-align: center; height: 16px; }} QProgressBar::chunk {{ background-color: {color}; }}"
 
     def showEvent(self, event):
@@ -486,12 +544,12 @@ class DashboardView(BaseView):
         target = self.inp_target.text().strip()
         tool = self.cmb_remote.currentText()
         executor = os.environ.get("USERNAME", "Desconhecido")
-        
+
         if tool != "Assistência Rápida" and not target:
             QMessageBox.warning(self, "Aviso", "Informe o computador alvo para conectar.")
             self.inp_target.setFocus()
             return
-            
+
         try:
             if tool == "RDP (Windows)":
                 subprocess.Popen(["mstsc", f"/v:{target}"])
@@ -501,22 +559,22 @@ class DashboardView(BaseView):
                 subprocess.Popen(["anydesk", target])
             elif tool == "Assistência Rápida":
                 subprocess.Popen("start quickassist", shell=True)
-                
+
             self.db.save_execution(
-                target_pc=target if target else "Sessão Local", 
-                script_name=f"Acesso Remoto ({tool})", 
-                status="SUCESSO", 
-                result_data="Conexão solicitada via interface gráfica.", 
-                technician=executor, 
+                target_pc=target if target else "Sessão Local",
+                script_name=f"Acesso Remoto ({tool})",
+                status="SUCESSO",
+                result_data="Conexão solicitada via interface gráfica.",
+                technician=executor,
                 module="[Dashboard] Conexão"
             )
         except Exception as e:
             self.db.save_execution(
-                target_pc=target if target else "Sessão Local", 
-                script_name=f"Acesso Remoto ({tool})", 
-                status="ERRO", 
-                result_data=str(e), 
-                technician=executor, 
+                target_pc=target if target else "Sessão Local",
+                script_name=f"Acesso Remoto ({tool})",
+                status="ERRO",
+                result_data=str(e),
+                technician=executor,
                 module="[Dashboard] Conexão"
             )
             QMessageBox.warning(self, "Erro", f"O executável para '{tool}' não foi encontrado ou falhou ao iniciar.\nDetalhe: {e}")
@@ -532,7 +590,7 @@ class DashboardView(BaseView):
         QMessageBox.warning(self, "Tempo Esgotado", f"O pacote mágico foi enviado, mas o computador {target} não respondeu a ping após 5 minutos.\n\nVerifique se ele possui cabo de energia conectado ou se o WoL está habilitado na BIOS.")
 
     def action_wol(self):
-        mac_text = self.lbl_mac.text().replace("MAC Address: ", "").strip()
+        mac_text = self.lbl_mac.text().replace("MAC Address: ", "").replace("MAC: ", "").strip()
         alvo_text = self.inp_target.text().strip()
         executor = os.environ.get("USERNAME", "Desconhecido")
 
@@ -540,17 +598,19 @@ class DashboardView(BaseView):
             if alvo_text.count(":") == 5 or alvo_text.count("-") == 5:
                 mac_text = alvo_text
             else:
-                mac_text, ok = QInputDialog.getText(self, "Wake-on-LAN", 
-                                                    "A máquina está offline e sem telemetria.\n\nCole o MAC Address (Ex: 00:11:22:33:44:55):")
+                mac_text, ok = QInputDialog.getText(
+                    self, "Wake-on-LAN",
+                    "A máquina está offline e sem telemetria.\n\nCole o MAC Address (Ex: 00:11:22:33:44:55):"
+                )
                 if not ok or not mac_text:
                     return
 
         mac_clean = mac_text.replace(':', '').replace('-', '').replace('.', '').upper()
-        
+
         if len(mac_clean) != 12:
             QMessageBox.warning(self, "Erro", f"O formato do MAC Address fornecido parece inválido: {mac_text}")
             return
-            
+
         try:
             data = bytes.fromhex('FF' * 6 + mac_clean * 16)
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -558,17 +618,17 @@ class DashboardView(BaseView):
             sock.sendto(data, ('255.255.255.255', 9))
             sock.sendto(data, ('255.255.255.255', 7))
             sock.close()
-            
+
             target_log = alvo_text if alvo_text else mac_clean
             self.db.save_execution(
-                target_pc=target_log, 
-                script_name="Wake-on-LAN", 
-                status="SUCESSO", 
-                result_data=f"Pacote Mágico disparado na rede para o MAC {mac_clean}", 
-                technician=executor, 
+                target_pc=target_log,
+                script_name="Wake-on-LAN",
+                status="SUCESSO",
+                result_data=f"Pacote Mágico disparado na rede para o MAC {mac_clean}",
+                technician=executor,
                 module="[Dashboard] Energia"
             )
-            
+
             if alvo_text and (alvo_text.count(".") == 3 or not alvo_text.count(":")):
                 self.btn_wol.setText("⏳ Aguardando...")
                 self.btn_wol.setEnabled(False)
@@ -576,18 +636,18 @@ class DashboardView(BaseView):
                 self.ping_worker.success.connect(self.on_wol_success)
                 self.ping_worker.timeout.connect(self.on_wol_timeout)
                 self.ping_worker.start()
-                QMessageBox.information(self, "Wake-on-LAN Disparado", f"O Pacote Mágico foi enviado.\n\nO SARCC continuará testando a conectividade em segundo plano e te avisará assim que a máquina ligar.")
+                QMessageBox.information(self, "Wake-on-LAN Disparado", "O Pacote Mágico foi enviado.\n\nO SARCC continuará testando a conectividade em segundo plano e te avisará assim que a máquina ligar.")
             else:
                 QMessageBox.information(self, "Wake-on-LAN Disparado", f"O Pacote Mágico foi enviado com sucesso para o MAC:\n{mac_text}")
-                
+
         except Exception as e:
             target_log = alvo_text if alvo_text else mac_clean
             self.db.save_execution(
-                target_pc=target_log, 
-                script_name="Wake-on-LAN", 
-                status="ERRO", 
-                result_data=str(e), 
-                technician=executor, 
+                target_pc=target_log,
+                script_name="Wake-on-LAN",
+                status="ERRO",
+                result_data=str(e),
+                technician=executor,
                 module="[Dashboard] Energia"
             )
             QMessageBox.critical(self, "Erro Crítico", f"Falha ao enviar o pacote Wake-on-LAN:\n{e}")
@@ -600,15 +660,17 @@ class DashboardView(BaseView):
             return
 
         acoes = {
-            "restart":  ("Reiniciar",       "power_restart"),
-            "shutdown": ("Desligar",        "power_shutdown"),
-            "logoff":   ("Forçar Logoff",   "power_logoff"),
+            "restart":  ("Reiniciar",     "power_restart"),
+            "shutdown": ("Desligar",      "power_shutdown"),
+            "logoff":   ("Forçar Logoff", "power_logoff"),
         }
         nome_acao, template_name = acoes[action_type]
 
-        reply = QMessageBox.question(self, 'Confirmação Crítica',
-                                     f'ATENÇÃO: Você está prestes a {nome_acao} o computador {target}.\n\nDeseja realmente prosseguir com esta ação disruptiva?',
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(
+            self, 'Confirmação Crítica',
+            f'ATENÇÃO: Você está prestes a {nome_acao} o computador {target}.\n\nDeseja realmente prosseguir com esta ação disruptiva?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
 
         if reply != QMessageBox.StandardButton.Yes:
             return
@@ -634,7 +696,7 @@ class DashboardView(BaseView):
         if getattr(self, 'is_fetching', False):
             if hasattr(self, 'worker') and self.worker.isRunning():
                 self.worker.is_cancelled = True
-            
+
             self._reset_fetch_button()
             agora = datetime.now().strftime('%H:%M:%S')
             self.lbl_last_sync.setText(f" Última atualização: Cancelado pelo usuário às {agora}")
@@ -649,7 +711,7 @@ class DashboardView(BaseView):
         self.is_fetching = True
         self.btn_fetch.setText("⛔ Cancelar Coleta")
         self.btn_fetch.setStyleSheet("background-color: #d9534f; color: white; padding: 0 15px; font-weight: bold; border-radius: 4px;")
-        
+
         agora = datetime.now().strftime('%H:%M:%S')
         self.lbl_last_sync.setText(f" Iniciado às: {agora}...")
 
@@ -666,7 +728,7 @@ class DashboardView(BaseView):
     def update_telemetry_ui(self, data):
         if getattr(self.worker, 'is_cancelled', False):
             return
-            
+
         self._reset_fetch_button()
         agora = datetime.now().strftime('%H:%M:%S')
         self.lbl_last_sync.setText(f" Última atualização: {agora}")
@@ -678,16 +740,15 @@ class DashboardView(BaseView):
         self.prog_storage.setStyleSheet(self._get_bar_style(pct))
         self.prog_storage.setFormat("%p%")
         self.lbl_storage_info.setText(f"Disco C:: Usado {pct}% ({free} GB livres de {total} GB)")
-        
+
         cpuModel = data.get("CPUModel", "N/A")
         cpuUsage = data.get("CPUUsage", 0)
         self.prog_cpu.setValue(int(cpuUsage))
         self.prog_cpu.setStyleSheet(self._get_bar_style(cpuUsage))
         self.prog_cpu.setFormat("%p%")
         self.lbl_cpu_info.setText(f"CPU: {cpuModel}")
-        
+
         tempVal = data.get("CPUTemp", "N/A")
-        
         if tempVal != "N/A":
             tempVal = str(tempVal).replace(",", ".")
 
@@ -718,25 +779,36 @@ class DashboardView(BaseView):
         self._last_profiles_list = profiles_list
         self._last_logged_names = logged_names
 
-        self.lbl_profiles_count.setText(str(len(profiles_list)))
+        total_prof_count = len(profiles_list)
+        temp_prof_count = data.get("TempProfilesCount")
+        if temp_prof_count is None:
+            temp_prof_count = sum(1 for p in profiles_list if _is_temp_profile(p))
+
+        if temp_prof_count > 0:
+            self.lbl_profiles_count.setText(f"{total_prof_count} ({temp_prof_count} Temp)")
+            self.lbl_profiles_count.setStyleSheet("font-size: 20px; font-weight: bold; color: #f0ad4e;")
+        else:
+            self.lbl_profiles_count.setText(str(total_prof_count))
+            self.lbl_profiles_count.setStyleSheet("font-size: 22px; font-weight: bold; color: #2a7de1;")
+
         self.lbl_logged_count.setText(str(len(logged_names)))
         self._populate_profiles_table(profiles_list, logged_names)
 
         self.lbl_hostname.setText(f"Hostname: {data.get('HostName', 'N/A')}")
         self.lbl_os.setText(f"SO: {data.get('OSVersion', 'N/A')}")
-        self.lbl_uptime.setText(f"Uptime: {data.get('Uptime', 'N/A')}") 
+        self.lbl_uptime.setText(f"Uptime: {data.get('Uptime', 'N/A')}")
         self.lbl_ip.setText(f"IP: {data.get('IP', 'N/A')}")
         self.lbl_mac.setText(f"MAC: {data.get('MAC', 'N/A')}")
-        
+
         av = data.get('AVProduct', 'N/A')
         self.lbl_av.setText(f"Antivírus: <span style='color: #4CAF50; font-weight: bold;'>{av}</span>")
-        
+
         activation = data.get('Activation', 'N/A')
         if "Ativado" in activation:
             self.lbl_activation.setText(f"Status Atual: <span style='color: #4CAF50;'>{activation}</span>")
         else:
             self.lbl_activation.setText(f"Status Atual: <span style='color: #f44336;'>{activation}</span>")
-            
+
         rdp = data.get('RDP', 'N/A')
         if rdp == "Ativado":
             self.lbl_rdp.setText(f"RDP: <span style='color: #4CAF50; font-weight: bold;'>{rdp}</span>")
@@ -784,7 +856,7 @@ class DashboardView(BaseView):
             self.lbl_desktopinfo.setText(f"Desktop Info: <span style='color: #4CAF50; font-weight: bold;'>{dinfo}</span>")
         else:
             self.lbl_desktopinfo.setText(f"Desktop Info: <span style='color: #888888; font-weight: bold;'>{dinfo}</span>")
-        
+
         wg = data.get('Winget', 'N/A')
         if "Instalado" in wg and "Não" not in wg:
             self.lbl_winget.setText(f"Winget: <span style='color: #4CAF50; font-weight: bold;'>{wg}</span>")
@@ -808,7 +880,7 @@ class DashboardView(BaseView):
     def show_telemetry_error(self, err):
         if getattr(self.worker, 'is_cancelled', False):
             return
-            
+
         self._reset_fetch_button()
         agora = datetime.now().strftime('%H:%M:%S')
         self.lbl_last_sync.setText(f" Última atualização: Falha às {agora}")
@@ -822,26 +894,30 @@ class DashboardView(BaseView):
             return
 
         self.tbl_profiles.setSortingEnabled(False)
-
-        def sort_key(p):
-            is_logged = p.get("Name", "") in logged_names
-            return (not is_logged, p.get("LastUse", "") or "")
-        profiles_sorted = sorted(profiles, key=sort_key)
+        profiles_sorted = _sort_profiles(profiles, logged_names)
 
         for p in profiles_sorted[:5]:
             row = self.tbl_profiles.rowCount()
             self.tbl_profiles.insertRow(row)
 
-            name_item = QTableWidgetItem(p.get("Name", "?"))
+            name = p.get("Name", "?")
+            is_temp = _is_temp_profile(p)
+            is_logged = name in logged_names
+
+            name_item = QTableWidgetItem(name)
             self.tbl_profiles.setItem(row, 0, name_item)
 
             last_use_item = QTableWidgetItem(_format_last_use(p.get("LastUse", "N/A")))
             self.tbl_profiles.setItem(row, 1, last_use_item)
 
-            is_logged = p.get("Name", "") in logged_names
-            status_item = QTableWidgetItem("🟢 Logado" if is_logged else "⚪ Inativo")
             if is_logged:
+                status_item = QTableWidgetItem("🟢 Logado")
                 status_item.setForeground(Qt.GlobalColor.green)
+            elif is_temp:
+                status_item = QTableWidgetItem("🟠 Temp / Órfão")
+                status_item.setForeground(Qt.GlobalColor.yellow)
+            else:
+                status_item = QTableWidgetItem("⚪ Inativo")
             self.tbl_profiles.setItem(row, 2, status_item)
 
         self.tbl_profiles.setSortingEnabled(True)

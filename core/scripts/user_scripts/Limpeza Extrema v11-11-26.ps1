@@ -1,0 +1,172 @@
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+$ErrorActionPreference = 'SilentlyContinue'
+
+$UsuariosProtegidos = @(
+    "Public", "Público", "Publico",
+    "Default", "Default User", "defaultuser0", "Usuário Padrão", "Usuario Padrao",
+    "All Users", "Todos os Usuários", "Todos os Usuarios",
+    "administrator", "administrador", "adm.ebserh", "adm.wsauan", "welber.santos",
+    "adm.bcaitano", "adm.michael", "adm.valdemir", "bruno.alves3", "adm.marcos", "marcos.vinycius"
+)
+
+$LogData = @{
+    Script      = "Limpeza Extrema"
+    Inicio      = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    Computador  = $env:COMPUTERNAME
+    StatusFinal = "SUCESSO"
+    Detalhes    = @()
+}
+
+function Remove-FolderAggressive ([string]$FolderPath) {
+    if ([string]::IsNullOrWhiteSpace($FolderPath) -or -not (Test-Path -LiteralPath $FolderPath)) { return $true }
+    try {
+        $item = Get-Item -LiteralPath $FolderPath -Force -ErrorAction SilentlyContinue
+        if ($item -and (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            return $false
+        }
+        Remove-Item -LiteralPath $FolderPath -Recurse -Force -ErrorAction Stop
+    } catch {
+        & cmd.exe /c " takeown /f `"$FolderPath`" /r /d y >nul 2>&1 & icacls `"$FolderPath`" /grant administradores:F /t /c /q >nul 2>&1 & rd /s /q `"$FolderPath`" >nul 2>&1 "
+    }
+    return (-not (Test-Path -LiteralPath $FolderPath))
+}
+
+try {
+    $HoraInicioStr = (Get-Date).ToString("HH:mm:ss")
+    $DataHoraInicioObj = Get-Date
+
+    $DiscoInicial = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+    $EspacoLivreInicial = if ($DiscoInicial) { [math]::Round($DiscoInicial.FreeSpace / 1GB, 2) } else { 0 }
+    $EspacoTotal = if ($DiscoInicial) { [math]::Round($DiscoInicial.Size / 1GB, 2) } else { 0 }
+
+    $LogData.Detalhes += "========================================================================"
+    $LogData.Detalhes += " INICIANDO LIMPEZA REMOTA - HOST: $($env:COMPUTERNAME)"
+    $LogData.Detalhes += " Modo de Execucao: EXTREMA (Apaga todos exceto Administradores VIP + Expurgo Orfaos)"
+    $LogData.Detalhes += " Hora de Inicio: $HoraInicioStr"
+    $LogData.Detalhes += " Espaco Livre Inicial (C:): $EspacoLivreInicial GB de $EspacoTotal GB"
+    $LogData.Detalhes += "========================================================================"
+    $LogData.Detalhes += " [1/4] Limpando Lixeira, Temp do Sistema, Cache Windows Update e Chaves .BAK..."
+
+    try { Clear-RecycleBin -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+    foreach ($sysTemp in @("$env:SystemRoot\Temp", "$env:SystemDrive\Temp", "$env:SystemRoot\Prefetch")) {
+        if (Test-Path -LiteralPath $sysTemp) {
+            Get-ChildItem -LiteralPath $sysTemp -Force -ErrorAction SilentlyContinue |
+                ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    $regProfileList = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
+    if (Test-Path $regProfileList) {
+        Get-ChildItem -Path $regProfileList -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like "*.bak" } | ForEach-Object {
+            Remove-Item -LiteralPath $_.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $LogData.Detalhes += " [2/4] Removendo Perfis WMI (Win32_UserProfile)..."
+
+    $TodosPerfisWMI = @(Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue)
+    $CaminhosCarregados = @{}
+    foreach ($p in $TodosPerfisWMI) {
+        if ($p.Loaded -eq $true -and -not [string]::IsNullOrWhiteSpace($p.LocalPath)) {
+            $CaminhosCarregados[$p.LocalPath.ToLower()] = $true
+        }
+    }
+
+    $PerfisWMI = @($TodosPerfisWMI | Where-Object {
+        ($_.Special -eq $false) -and
+        (-not [string]::IsNullOrWhiteSpace($_.LocalPath)) -and
+        ($_.LocalPath -notlike "*Public*") -and
+        ($_.LocalPath -notmatch "(?i)defaultuser0|Default$")
+    })
+
+    $Removidos = 0; $Mantidos = 0; $Protegidos = 0; $PastasOrfasRemovidas = 0
+
+    foreach ($perfil in $PerfisWMI) {
+        $CaminhoPerfil = $perfil.LocalPath
+        if ([string]::IsNullOrWhiteSpace($CaminhoPerfil)) { continue }
+
+        $NomeUser = Split-Path -Path $CaminhoPerfil -Leaf -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace($NomeUser)) { continue }
+
+        if ($UsuariosProtegidos -contains $NomeUser) {
+            $LogData.Detalhes += " [PROTEGIDO] $NomeUser"
+            $Protegidos++
+            continue
+        }
+
+        if ($perfil.Loaded -eq $true) {
+            $LogData.Detalhes += " [EM USO] $NomeUser (Sessao ativa - Ignorado)"
+            $Mantidos++
+            continue
+        }
+
+        try {
+            $perfil | Remove-CimInstance -ErrorAction Stop
+            if (Test-Path -LiteralPath $CaminhoPerfil) {
+                $null = Remove-FolderAggressive $CaminhoPerfil
+            }
+            $LogData.Detalhes += " [REMOVIDO WMI] $NomeUser"
+            $Removidos++
+        } catch {
+            if (Remove-FolderAggressive $CaminhoPerfil) {
+                $LogData.Detalhes += " [REMOVIDO FORCADO] $NomeUser"
+                $Removidos++
+            } else {
+                $LogData.Detalhes += " [FALHA AO REMOVER] $NomeUser : $($_.Exception.Message)"
+                $Mantidos++
+            }
+        }
+    }
+
+    $LogData.Detalhes += " [3/4] Varrendo C:\Users contra pastas TEMP* e pastas orfas sem vinculo WMI..."
+    $UsersRoot = "$env:SystemDrive\Users"
+    if (Test-Path -LiteralPath $UsersRoot) {
+        $TodasPastasDisco = @(Get-ChildItem -LiteralPath $UsersRoot -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
+            (($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) -and
+            (($_.Attributes -band [System.IO.FileAttributes]::System) -eq 0)
+        })
+        foreach ($pasta in $TodasPastasDisco) {
+            $nomePasta = $pasta.Name
+            if ($UsuariosProtegidos -contains $nomePasta) { continue }
+            if ($CaminhosCarregados.ContainsKey($pasta.FullName.ToLower())) { continue }
+
+            if (Remove-FolderAggressive $pasta.FullName) {
+                $PastasOrfasRemovidas++
+            }
+        }
+    }
+    $LogData.Detalhes += " -> Pastas orfas / TEMP* eliminadas diretamente do disco: $PastasOrfasRemovidas"
+
+    $DiscoFinal = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+    $EspacoLivreApos = if ($DiscoFinal) { [math]::Round($DiscoFinal.FreeSpace / 1GB, 2) } else { $EspacoLivreInicial }
+    $Liberado = [math]::Round(($EspacoLivreApos - $EspacoLivreInicial), 2)
+    if ($Liberado -lt 0) { $Liberado = 0 }
+
+    $HoraFinalStr = (Get-Date).ToString("HH:mm:ss")
+    $TempoExecucao = (Get-Date) - $DataHoraInicioObj
+
+    $LogData.Detalhes += "========================================================================"
+    $LogData.Detalhes += "                   RELATORIO DE EXECUCAO - GLPI"
+    $LogData.Detalhes += "========================================================================"
+    $LogData.Detalhes += " Hora Inicial              : $HoraInicioStr"
+    $LogData.Detalhes += " Hora Final                : $HoraFinalStr"
+    $LogData.Detalhes += " Tempo de Execucao         : $($TempoExecucao.ToString('hh\:mm\:ss'))"
+    $LogData.Detalhes += "------------------------------------------------------------------------"
+    $LogData.Detalhes += " Espaco Livre Antes        : $EspacoLivreInicial GB"
+    $LogData.Detalhes += " Espaco Livre Apos         : $EspacoLivreApos GB"
+    $LogData.Detalhes += " Total Liberado            : $Liberado GB"
+    $LogData.Detalhes += "------------------------------------------------------------------------"
+    $LogData.Detalhes += " Perfis WMI Removidos      : $Removidos"
+    $LogData.Detalhes += " Pastas Orfas/TEMP* Remov. : $PastasOrfasRemovidas"
+    $LogData.Detalhes += " Perfis Mantidos (Em Uso)  : $Mantidos"
+    $LogData.Detalhes += " Perfis Protegidos         : $Protegidos"
+    $LogData.Detalhes += "========================================================================"
+
+} catch {
+    $LogData.StatusFinal = "ERRO"
+    $LogData.Detalhes += "Falha critica: $($_.Exception.Message)"
+} finally {
+    $LogData.Fim = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $LogData | ConvertTo-Json -Depth 3 -Compress | Write-Output
+}
