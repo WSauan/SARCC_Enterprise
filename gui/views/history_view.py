@@ -1,85 +1,124 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QPushButton, QTreeWidget, QTreeWidgetItem, 
-                             QHeaderView, QDialog, QTextEdit, QMessageBox, QFileDialog, QCheckBox, QLineEdit, QComboBox, QDateEdit, QAbstractItemView, QGroupBox)
-from PyQt6.QtCore import Qt, QDate
-from PyQt6.QtGui import QColor
 import json
 import re
 from datetime import datetime
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QTreeWidget, QTreeWidgetItem,
+    QHeaderView, QDialog, QTextEdit, QMessageBox,
+    QFileDialog, QCheckBox, QLineEdit, QComboBox,
+    QDateEdit, QAbstractItemView, QGroupBox
+)
+from PyQt6.QtCore import Qt, QDate
 
 from core.database import DatabaseManager
+from gui.views.base_view import sanitize_filename
+from gui.views.software_view import fix_mojibake
+
+
+def extract_json_from_result(raw_text: str) -> dict | None:
+    """Extrai o dicionário JSON de um log de execução mesmo quando há linhas de texto/avisos antes do JSON."""
+    if not raw_text:
+        return None
+    clean_res = re.sub(r"\[\s*⏱.*?Tempo de Execução.*?\]", "", str(raw_text)).strip()
+    if not clean_res:
+        return None
+    try:
+        parsed = json.loads(clean_res)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    for line in reversed(clean_res.splitlines()):
+        line_str = line.strip()
+        if line_str.startswith("{") and line_str.endswith("}"):
+            try:
+                parsed = json.loads(line_str)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                continue
+    return None
+
 
 class LogTreeWidgetItem(QTreeWidgetItem):
     def __lt__(self, other):
         column = self.treeWidget().sortColumn()
         if column in [1, 10]:
             column = 3
-            
+
         if column == 2:
-            try: return int(self.text(column)) < int(other.text(column))
-            except ValueError: return self.text(column) < other.text(column)
-                
+            try:
+                return int(self.text(column)) < int(other.text(column))
+            except ValueError:
+                return self.text(column) < other.text(column)
+
         if column == 5:
             val1 = self.data(5, Qt.ItemDataRole.UserRole)
             val2 = other.data(5, Qt.ItemDataRole.UserRole)
             v1 = float(val1) if val1 is not None else -1.0
             v2 = float(val2) if val2 is not None else -1.0
             return v1 < v2
-                
+
         return self.text(column) < other.text(column)
+
 
 class JsonDetailDialog(QDialog):
     def __init__(self, json_string, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Detalhes da Execução (JSON)")
-        self.resize(700, 500)
-        
+        self.resize(720, 500)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
-        
+
         text_edit = QTextEdit()
         text_edit.setReadOnly(True)
-        text_edit.setStyleSheet("font-family: Consolas, monospace; font-size: 13px; background-color: #1e1e1e; color: #d4d4d4; padding: 10px; border-radius: 4px; border: 1px solid #444;")
-        
-        clean_json = re.sub(r'\[\s*⏱.*?Tempo de Execução.*?\]', '', json_string).strip()
-        
-        try:
-            parsed_json = json.loads(clean_json)
+        text_edit.setStyleSheet(
+            "font-family: Consolas, monospace; font-size: 13px; "
+            "background-color: #1e1e1e; color: #d4d4d4; padding: 10px; "
+            "border-radius: 4px; border: 1px solid #444;"
+        )
+
+        parsed_json = extract_json_from_result(json_string)
+        if parsed_json is not None:
             formatted_json = json.dumps(parsed_json, indent=4, ensure_ascii=False)
-            text_edit.setPlainText(formatted_json)
-        except Exception:
-            text_edit.setPlainText(str(json_string))
-            
+            text_edit.setPlainText(fix_mojibake(formatted_json))
+        else:
+            text_edit.setPlainText(fix_mojibake(str(json_string or "")))
+
         layout.addWidget(text_edit)
-        
+
         btn_close = QPushButton("Fechar")
         btn_close.setFixedHeight(32)
         btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_close.setStyleSheet("background-color: #4a90e2; color: white; font-weight: bold; border-radius: 4px; padding: 0 20px;")
         btn_close.clicked.connect(self.close)
-        
+
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         btn_layout.addWidget(btn_close)
         btn_layout.addStretch()
-        
+
         layout.addLayout(btn_layout)
 
+
 class HistoryView(QWidget):
-    def __init__(self):
+    def __init__(self, main_window_ref=None):
         super().__init__()
+        self.main_window = main_window_ref
         self.db = DatabaseManager()
         self.view_mode = "ativos"
-        self.sort_col = 3 
+        self.sort_col = 3
         self.sort_order = Qt.SortOrder.DescendingOrder
         self._setup_ui()
-        
+
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
-        
+
         header_layout = QHBoxLayout()
         self.lbl_title = QLabel("Histórico e Auditoria por Máquina")
         self.lbl_title.setStyleSheet("font-size: 24px; font-weight: bold; color: #4a90e2;")
@@ -129,20 +168,20 @@ class HistoryView(QWidget):
         self.btn_refresh.setStyleSheet("background-color: #666; color: white; padding: 0 15px; font-weight: bold; border-radius: 4px;")
         self.btn_refresh.clicked.connect(self.load_logs)
         header_layout.addWidget(self.btn_refresh)
-        
+
         layout.addLayout(header_layout)
 
         filter_group = QGroupBox("Filtros de Pesquisa e Seleção")
         control_bar = QHBoxLayout(filter_group)
         control_bar.setContentsMargins(15, 20, 15, 15)
         control_bar.setSpacing(10)
-        
+
         self.chk_date_filter = QCheckBox("Data:")
         self.chk_date_filter.setFixedHeight(32)
         self.chk_date_filter.setStyleSheet("font-weight: bold; color: #4a90e2;")
         self.chk_date_filter.stateChanged.connect(self.apply_filters)
         control_bar.addWidget(self.chk_date_filter)
-        
+
         self.dt_filter = QDateEdit(QDate.currentDate())
         self.dt_filter.setFixedHeight(32)
         self.dt_filter.setCalendarPopup(True)
@@ -155,7 +194,7 @@ class HistoryView(QWidget):
         self.dt_filter.dateChanged.connect(self.apply_filters)
         self.chk_date_filter.toggled.connect(self.dt_filter.setEnabled)
         control_bar.addWidget(self.dt_filter)
-        
+
         control_bar.addSpacing(15)
 
         self.cmb_filter_status = QComboBox()
@@ -177,16 +216,16 @@ class HistoryView(QWidget):
         self.chk_select_all.setStyleSheet("font-weight: bold; color: #4a90e2; margin-left: 10px;")
         self.chk_select_all.stateChanged.connect(self.toggle_select_all)
         control_bar.addWidget(self.chk_select_all)
-        
+
         layout.addWidget(filter_group)
-        
+
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Alvo (Computador)", "[✓]", "ID", "Início", "Fim", "Tempo", "Módulo", "Ação / Script", "Técnico", "Status", "Ações"])
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.tree.setSortingEnabled(True)
-        self.tree.setRootIsDecorated(False) 
-        
+        self.tree.setRootIsDecorated(False)
+
         header = self.tree.header()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.resizeSection(0, 180)
@@ -200,12 +239,15 @@ class HistoryView(QWidget):
         header.resizeSection(8, 100)
         header.resizeSection(9, 100)
         header.setStretchLastSection(True)
-        
+
         self.tree.header().sectionClicked.connect(self.on_header_clicked)
         self.tree.itemDoubleClicked.connect(self.on_item_double_clicked)
         layout.addWidget(self.tree)
 
-    def _format_duration(self, seconds):
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        if seconds < 0:
+            return "-"
         if seconds < 60:
             return f"{seconds:.1f}s"
         elif seconds < 3600:
@@ -214,7 +256,8 @@ class HistoryView(QWidget):
             return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m {((seconds % 3600) % 60):.0f}s"
 
     def on_header_clicked(self, logical_index):
-        if logical_index in [1, 10]: return
+        if logical_index in [1, 10]:
+            return
         if self.sort_col == logical_index:
             self.sort_order = Qt.SortOrder.DescendingOrder if self.sort_order == Qt.SortOrder.AscendingOrder else Qt.SortOrder.AscendingOrder
         else:
@@ -224,38 +267,40 @@ class HistoryView(QWidget):
         self.tree.header().setSortIndicator(self.sort_col, self.sort_order)
 
     def on_item_double_clicked(self, item, column):
-        if item is not None:
-            current_state = item.checkState(1)
-            new_state = Qt.CheckState.Checked if current_state == Qt.CheckState.Unchecked else Qt.CheckState.Unchecked
-            item.setCheckState(1, new_state)
-            
+        if item is not None and column != 1:
             json_data = item.data(10, Qt.ItemDataRole.UserRole)
-            if json_data: self.show_details(json_data)
+            if json_data:
+                self.show_details(json_data)
 
     def apply_filters(self):
-        search_text = self.inp_search.text().lower()
+        search_text = self.inp_search.text().lower().strip()
         status_filter = self.cmb_filter_status.currentText()
         use_date = self.chk_date_filter.isChecked()
         filter_date_str = self.dt_filter.date().toString("yyyy-MM-dd")
-        
+
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
             match = True
-            
+
             if status_filter != "Todos os Status":
-                val = item.text(9).upper() 
-                if status_filter == "SUCESSO" and "SUCESSO" not in val: match = False
-                elif status_filter == "ERRO / FALHA" and not ("ERRO" in val or "FALHA" in val): match = False
-                elif status_filter == "PENDENTE" and "PENDENTE" not in val: match = False
-            
+                val = item.text(9).upper()
+                if status_filter == "SUCESSO" and "SUCESSO" not in val:
+                    match = False
+                elif status_filter == "ERRO / FALHA" and not ("ERRO" in val or "FALHA" in val or "ALERTA" in val):
+                    match = False
+                elif status_filter == "PENDENTE" and "PENDENTE" not in val:
+                    match = False
+
             if match and search_text:
-                row_text = f"{item.text(0)} {item.text(6)} {item.text(7)} {item.text(8)}".lower() 
-                if search_text not in row_text: match = False
-                    
+                row_text = f"{item.text(0)} {item.text(6)} {item.text(7)} {item.text(8)}".lower()
+                if search_text not in row_text:
+                    match = False
+
             if match and use_date:
-                log_date = item.text(3)[:10] 
-                if log_date != filter_date_str: match = False
-                    
+                log_date = item.text(3)[:10]
+                if log_date != filter_date_str:
+                    match = False
+
             item.setHidden(not match)
 
     def toggle_view(self):
@@ -270,7 +315,7 @@ class HistoryView(QWidget):
             self.view_mode = "ativos"
             self.lbl_title.setText("Histórico e Auditoria por Máquina")
             self.btn_toggle_view.setText("🗑️ Ver Lixeira")
-            self.btn_batch_del.setText("🗑️️ Excluir Selecionados")
+            self.btn_batch_del.setText("🗑 Excluir Selecionados")
             self.btn_batch_res.setVisible(False)
             self.btn_empty_trash.setVisible(False)
         self.chk_select_all.setChecked(False)
@@ -305,7 +350,11 @@ class HistoryView(QWidget):
                 cursor.executemany("UPDATE executions SET excluido = 1 WHERE id = ?", [(i,) for i in ids])
                 conn.commit()
             else:
-                reply = QMessageBox.question(self, 'Excluir Definitivamente', f'Deseja excluir permanentemente os {len(ids)} logs selecionados?', QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                reply = QMessageBox.question(
+                    self, "Excluir Definitivamente",
+                    f"Deseja excluir permanentemente os {len(ids)} logs selecionados?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
                 if reply == QMessageBox.StandardButton.Yes:
                     cursor.executemany("DELETE FROM executions WHERE id = ?", [(i,) for i in ids])
                     conn.commit()
@@ -315,7 +364,8 @@ class HistoryView(QWidget):
 
     def batch_restore(self):
         ids = self.get_selected_ids()
-        if not ids: return
+        if not ids:
+            return
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.executemany("UPDATE executions SET excluido = 0 WHERE id = ?", [(i,) for i in ids])
@@ -324,7 +374,11 @@ class HistoryView(QWidget):
         self.load_logs()
 
     def empty_trash(self):
-        reply = QMessageBox.question(self, 'Esvaziar Lixeira', 'Apagar TODOS os logs da lixeira definitivamente?', QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(
+            self, "Esvaziar Lixeira",
+            "Apagar TODOS os logs da lixeira definitivamente?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
         if reply == QMessageBox.StandardButton.Yes:
             with self.db.get_connection() as conn:
                 cursor = conn.cursor()
@@ -333,10 +387,10 @@ class HistoryView(QWidget):
             self.load_logs()
 
     def load_logs(self):
-        self.tree.setSortingEnabled(False) 
+        self.tree.setSortingEnabled(False)
         self.tree.clear()
         is_excluido = 1 if self.view_mode == "lixeira" else 0
-        
+
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -346,66 +400,72 @@ class HistoryView(QWidget):
                 ORDER BY start_time DESC LIMIT 1000
             ''', (is_excluido,))
             rows = cursor.fetchall()
-            
-        for log in rows:
-            log_id, start_time, target_pc, script_name, status, result_data = log[:6]
+
+        for row in rows:
+            log_id, start_time, target_pc, script_name, status, result_data = row[:6]
             pc = target_pc if target_pc else "Desconhecido"
-            technician = log[6] if len(log) > 6 and log[6] else "N/A"
-            module = log[7] if len(log) > 7 and log[7] else "Geral"
-            
+            technician = row[6] if len(row) > 6 and row[6] else "N/A"
+            module = row[7] if len(row) > 7 and row[7] else "Geral"
+
             inicio_str = str(start_time)[:19]
             fim_str = "-"
             duracao_str = "-"
             raw_seconds = -1.0
-            
+
             if result_data:
-                tempo_match = re.search(r'\[\s*⏱.*?Tempo de Execução.*?: ([\d\.]+) segundos\]', str(result_data))
+                tempo_match = re.search(r"\[\s*⏱.*?Tempo de Execução.*?: ([\d\.]+) segundos\]", str(result_data))
                 if tempo_match:
                     raw_seconds = float(tempo_match.group(1))
                     duracao_str = self._format_duration(raw_seconds)
-                    
-                try:
-                    clean_res = re.sub(r'\[\s*⏱.*?Tempo de Execução.*?\]', '', str(result_data)).strip()
-                    js = json.loads(clean_res)
-                    
-                    if "Inicio" in js: inicio_str = js["Inicio"]
-                    if "Fim" in js: fim_str = js["Fim"]
-                        
+
+                js = extract_json_from_result(result_data)
+                if js:
+                    if "Inicio" in js:
+                        inicio_str = str(js["Inicio"])
+                    if "Fim" in js:
+                        fim_str = str(js["Fim"])
                     if "Inicio" in js and "Fim" in js:
-                        fmt = "%Y-%m-%d %H:%M:%S"
-                        t_in = datetime.strptime(js["Inicio"], fmt)
-                        t_out = datetime.strptime(js["Fim"], fmt)
-                        raw_seconds = (t_out - t_in).total_seconds()
-                        duracao_str = self._format_duration(raw_seconds)
-                except: pass
+                        try:
+                            fmt = "%Y-%m-%d %H:%M:%S"
+                            t_in = datetime.strptime(str(js["Inicio"]), fmt)
+                            t_out = datetime.strptime(str(js["Fim"]), fmt)
+                            raw_seconds = (t_out - t_in).total_seconds()
+                            duracao_str = self._format_duration(raw_seconds)
+                        except Exception:
+                            pass
 
             child_item = LogTreeWidgetItem(self.tree, [
-                f"🖥️ {pc}", "", str(log_id), inicio_str, fim_str, duracao_str, str(module), str(script_name), str(technician), str(status), ""
+                f"🖥️ {pc}", "", str(log_id), inicio_str, fim_str, duracao_str,
+                str(module), str(script_name), str(technician), str(status), ""
             ])
-            
-            if "SUCESSO" in status.upper(): child_item.setForeground(9, Qt.GlobalColor.green)
-            elif "ERRO" in status.upper() or "FALHA" in status.upper(): child_item.setForeground(9, Qt.GlobalColor.red)
-            elif "ALERTA" in status.upper(): child_item.setForeground(9, Qt.GlobalColor.darkYellow)
-            
+
+            status_up = str(status).upper()
+            if "SUCESSO" in status_up:
+                child_item.setForeground(9, Qt.GlobalColor.green)
+            elif "ERRO" in status_up or "FALHA" in status_up:
+                child_item.setForeground(9, Qt.GlobalColor.red)
+            elif "ALERTA" in status_up:
+                child_item.setForeground(9, Qt.GlobalColor.darkYellow)
+
             child_item.setCheckState(1, Qt.CheckState.Unchecked)
             child_item.setData(5, Qt.ItemDataRole.UserRole, raw_seconds)
             child_item.setData(10, Qt.ItemDataRole.UserRole, result_data)
-            
+
             action_widget = QWidget()
             action_layout = QHBoxLayout(action_widget)
             action_layout.setContentsMargins(2, 2, 2, 2)
-            
+
             btn_view = QPushButton("📄 JSON")
             btn_view.setFixedHeight(24)
             btn_view.setCursor(Qt.CursorShape.PointingHandCursor)
             btn_view.setStyleSheet("background-color: #2a7de1; color: white; padding: 0 8px; font-weight: bold; border-radius: 4px;")
-            btn_view.clicked.connect(lambda checked, js=result_data: self.show_details(js))
-            
+            btn_view.clicked.connect(lambda checked, js_str=result_data: self.show_details(js_str))
+
             action_layout.addWidget(btn_view)
             action_layout.addStretch()
             self.tree.setItemWidget(child_item, 10, action_widget)
-                
-        self.tree.setSortingEnabled(True) 
+
+        self.tree.setSortingEnabled(True)
         self.tree.sortItems(self.sort_col, self.sort_order)
         self.apply_filters()
 
@@ -415,7 +475,7 @@ class HistoryView(QWidget):
             QMessageBox.warning(self, "Aviso", "Marque o checkbox de pelo menos uma linha para exportar.")
             return
 
-        agora = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+        agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         conteudo_final = (
             "================================================================================\n"
             "                 SARCC - RELATÓRIO OFICIAL DE AUDITORIA E EXECUÇÃO\n"
@@ -424,47 +484,61 @@ class HistoryView(QWidget):
             f"Total de Registros Exportados: {len(ids)}\n"
             "================================================================================\n\n"
         )
-        
+
+        pc = "ENDPOINT"
+        inicio_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        script = "Relatorio"
+
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             for idx, log_id in enumerate(ids, 1):
-                cursor.execute("SELECT start_time, target_pc, script_name, status, result_data, technician, module FROM executions WHERE id = ?", (log_id,))
+                cursor.execute(
+                    "SELECT start_time, target_pc, script_name, status, result_data, technician, module FROM executions WHERE id = ?",
+                    (log_id,)
+                )
                 row_data = cursor.fetchone()
-                if not row_data: continue
-                
+                if not row_data:
+                    continue
+
                 data_bruta, pc, script, status, res_data, tech, mod = row_data
                 detalhes = ""
-                
+
                 inicio_str = str(data_bruta)[:19]
                 fim_str = "N/A"
                 duracao_str = "N/A"
-                
+
                 if res_data:
-                    tempo_match = re.search(r'\[\s*⏱.*?Tempo de Execução.*?: ([\d\.]+) segundos\]', str(res_data))
+                    tempo_match = re.search(r"\[\s*⏱.*?Tempo de Execução.*?: ([\d\.]+) segundos\]", str(res_data))
                     if tempo_match:
                         duracao_str = self._format_duration(float(tempo_match.group(1)))
-                        
-                    try:
-                        clean_res = re.sub(r'\[\s*⏱.*?Tempo de Execução.*?\]', '', str(res_data)).strip()
-                        js = json.loads(clean_res)
-                        
-                        if "Inicio" in js: inicio_str = js["Inicio"]
-                        if "Fim" in js: fim_str = js["Fim"]
+
+                    js = extract_json_from_result(res_data)
+                    if js:
+                        if "Inicio" in js:
+                            inicio_str = str(js["Inicio"])
+                        if "Fim" in js:
+                            fim_str = str(js["Fim"])
                         if "Inicio" in js and "Fim" in js:
-                            fmt = "%Y-%m-%d %H:%M:%S"
-                            t_in = datetime.strptime(js["Inicio"], fmt)
-                            t_out = datetime.strptime(js["Fim"], fmt)
-                            duracao_str = self._format_duration((t_out - t_in).total_seconds())
-                            
+                            try:
+                                fmt = "%Y-%m-%d %H:%M:%S"
+                                t_in = datetime.strptime(str(js["Inicio"]), fmt)
+                                t_out = datetime.strptime(str(js["Fim"]), fmt)
+                                duracao_str = self._format_duration((t_out - t_in).total_seconds())
+                            except Exception:
+                                pass
+
                         msg = js.get("Mensagem", "")
-                        if msg: detalhes += f">> MENSAGEM DO SISTEMA:\n{msg}\n\n"
+                        if msg:
+                            detalhes += f">> MENSAGEM DO SISTEMA:\n{fix_mojibake(str(msg))}\n\n"
                         if "Detalhes" in js:
                             detalhes += ">> DETALHES TÉCNICOS:\n"
                             if isinstance(js["Detalhes"], list):
-                                for linha in js["Detalhes"]: detalhes += f"  {linha}\n"
-                            else: detalhes += f"  {js['Detalhes']}\n"
-                    except:
-                        detalhes = f">> RAW OUTPUT:\n{str(res_data)}"
+                                for linha in js["Detalhes"]:
+                                    detalhes += f"  {fix_mojibake(str(linha))}\n"
+                            else:
+                                detalhes += f"  {fix_mojibake(str(js['Detalhes']))}\n"
+                    else:
+                        detalhes = f">> RAW OUTPUT:\n{fix_mojibake(str(res_data))}"
 
                 conteudo = (
                     f"[ REGISTRO #{idx} - ID BD: {log_id} ] ".ljust(80, "-") + "\n"
@@ -482,22 +556,22 @@ class HistoryView(QWidget):
                 conteudo_final += conteudo
 
         if len(ids) == 1:
-            data_safe = inicio_str.replace(":", "-").replace(" ", "_")
-            script_safe = script.replace("/", "-").replace("\\", "-").replace(" ", "_")
-            default_filename = f"{pc}_{data_safe}_{script_safe}.txt"
+            raw_name = f"{pc}_{inicio_str}_{script}".replace(" ", "_")
+            default_filename = f"{sanitize_filename(raw_name)}.txt"
         else:
-            agora_safe = datetime.now().strftime('%Y%m%d_%H%M')
+            agora_safe = datetime.now().strftime("%Y%m%d_%H%M")
             default_filename = f"Lote_{len(ids)}_Registros_{agora_safe}.txt"
-            
+
         file_path, _ = QFileDialog.getSaveFileName(self, "Salvar Relatório", default_filename, "Text Files (*.txt)")
         if file_path:
-            with open(file_path, 'w', encoding='utf-8') as f: f.write(conteudo_final)
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(conteudo_final)
             QMessageBox.information(self, "Sucesso", "Relatório de Auditoria salvo!")
 
     def show_details(self, json_string):
         dialog = JsonDetailDialog(json_string, self)
         dialog.exec()
-        
+
     def showEvent(self, event):
         super().showEvent(event)
         self.inp_search.setFocus()
