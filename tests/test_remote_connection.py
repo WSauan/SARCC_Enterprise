@@ -1,4 +1,6 @@
+import os
 import pytest
+from unittest.mock import MagicMock
 from core.remote_connection import RemoteConnectionManager
 
 
@@ -21,6 +23,35 @@ def test_process_output_extracts_last_valid_json_line():
     assert res["status"] == "Sucesso"
     assert res["json_data"]["StatusFinal"] == "SUCESSO"
     assert res["json_data"]["Computador"] == "HUL-WK-TESTE"
+
+
+def test_run_local_uses_temp_file_for_large_scripts_and_cleans_up(mocker):
+    """Garante que _run_local executa via arquivo temporário (-File) evitando WinError 206 e remove o arquivo ao final."""
+    conn = RemoteConnectionManager()
+    captured_args = {}
+
+    def fake_run(cmd_list, **kwargs):
+        captured_args["cmd"] = cmd_list
+        script_path = cmd_list[-1]
+        captured_args["exists_during_run"] = os.path.exists(script_path)
+        captured_args["script_path"] = script_path
+
+        mock_res = MagicMock()
+        mock_res.stdout = '{"StatusFinal": "SUCESSO"}'.encode("utf-8")
+        mock_res.stderr = b""
+        mock_res.returncode = 0
+        return mock_res
+
+    mocker.patch("core.remote_connection.subprocess.run", side_effect=fake_run)
+
+    large_script = "# Script extenso\n" * 3000 + 'Write-Output \'{"StatusFinal": "SUCESSO"}\''
+    res = conn._run_local(large_script)
+
+    assert res["status"] == "Sucesso"
+    assert "-File" in captured_args["cmd"]
+    assert "-EncodedCommand" not in captured_args["cmd"]
+    assert captured_args["exists_during_run"] is True
+    assert not os.path.exists(captured_args["script_path"])
 
 
 def test_execute_script_falls_back_to_wmi_when_winrm_fails(mocker):

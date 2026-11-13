@@ -60,19 +60,33 @@ class RemoteConnectionManager:
         return result
 
     def _run_local(self, script_content: str) -> Dict[str, Any]:
-        b64 = base64.b64encode(script_content.encode("utf-16-le")).decode("utf-8")
-        result = subprocess.run(
-            [
-                "powershell.exe", "-ExecutionPolicy", "Bypass",
-                "-NoProfile", "-NonInteractive", "-EncodedCommand", b64
-            ],
-            capture_output=True, text=False, creationflags=subprocess.CREATE_NO_WINDOW
-        )
-        return self._process_output(
-            self._smart_decode(result.stdout),
-            self._smart_decode(result.stderr),
-            result.returncode
-        )
+        local_dir = os.path.join(os.environ.get("TEMP", "C:\\Windows\\Temp"), "SARCC_Cache")
+        os.makedirs(local_dir, exist_ok=True)
+        script_id = uuid.uuid4().hex[:8]
+        local_script = os.path.join(local_dir, f"local_{script_id}.ps1")
+
+        try:
+            # utf-8-sig adiciona o BOM para que o Windows PowerShell 5.1 interprete acentos UTF-8 nativamente
+            with open(local_script, "w", encoding="utf-8-sig") as f:
+                f.write(script_content)
+
+            result = subprocess.run(
+                [
+                    "powershell.exe", "-ExecutionPolicy", "Bypass",
+                    "-NoProfile", "-NonInteractive", "-File", local_script
+                ],
+                capture_output=True, text=False, creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            return self._process_output(
+                self._smart_decode(result.stdout),
+                self._smart_decode(result.stderr),
+                result.returncode
+            )
+        finally:
+            try:
+                os.remove(local_script)
+            except OSError as e:
+                log.debug(f"Falha ao remover script local temporário: {e}")
 
     def _run_native_remoting(self, target_pc: str, script_content: str) -> Dict[str, Any]:
         b64_script = base64.b64encode(script_content.encode("utf-8")).decode("utf-8")
@@ -198,7 +212,7 @@ class RemoteConnectionManager:
             out = self._smart_decode(result.stdout)
             err = self._smart_decode(result.stderr)
 
-            if "SARCC_WMI_ERROR" in out or result.returncode != 0:
+            if "SARCC_WINRM_ERROR" in out or "SARCC_WMI_ERROR" in out or result.returncode != 0:
                 raise Exception(out.replace("SARCC_WMI_ERROR: ", "").strip() if out else err)
 
             return self._process_output(out, "", 0)
@@ -226,7 +240,6 @@ class RemoteConnectionManager:
             return raw_bytes.strip()
         try:
             text = raw_bytes.decode("utf-8")
-            # Verifica apenas se há o carácter real de substituição Unicode (\ufffd)
             if "\ufffd" in text:
                 raise ValueError("Corrompido")
             return text.strip()
