@@ -23,8 +23,10 @@ TIMEOUT_PORT_PROBE = 1.0
 TIMEOUT_POWERSHELL_LOCAL = 600
 TIMEOUT_WMI_HOURS = 8
 
+
 def is_dev_mode() -> bool:
     return not getattr(sys, "frozen", False)
+
 
 def get_data_dir() -> Path:
     env_override = os.environ.get("SARCC_DATA_DIR")
@@ -38,21 +40,38 @@ def get_data_dir() -> Path:
     project_root = Path(__file__).resolve().parent.parent
     return project_root / "data"
 
-def get_logs_dir() -> Path: return get_data_dir() / "logs"
-def get_db_path() -> Path: return get_data_dir() / "sarcc.db"
-def get_credentials_path() -> Path: return get_data_dir() / "credentials.dat"
+
+def get_logs_dir() -> Path:
+    return get_data_dir() / "logs"
+
+
+def get_db_path() -> Path:
+    return get_data_dir() / "sarcc.db"
+
+
+def get_credentials_path() -> Path:
+    return get_data_dir() / "credentials.dat"
+
 
 def get_ps_scripts_dir() -> Path:
+    """Localiza o diretório de scripts PowerShell (prioriza pasta externa junto ao .exe se existir)."""
+    if not is_dev_mode():
+        external_scripts = Path(sys.executable).resolve().parent / "core" / "scripts"
+        if external_scripts.is_dir():
+            return external_scripts
     from core.resources import resource_path
     return Path(resource_path(os.path.join("core", "scripts")))
+
 
 def ensure_dirs() -> None:
     get_data_dir().mkdir(parents=True, exist_ok=True)
     get_logs_dir().mkdir(parents=True, exist_ok=True)
 
+
 def get_max_threads(default: int = 12) -> int:
     raw = os.environ.get("SARCC_MAX_THREADS", "").strip()
-    if not raw: return default
+    if not raw:
+        return default
     try:
         value = int(raw)
         return value if value >= 1 else default
