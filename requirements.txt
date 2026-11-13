@@ -1,2 +1,10 @@
-PyQt6
+# Interface Gráfica e Temas
+PyQt6>=6.5.0
 pyqtdarktheme
+
+# Testes Automatizados e Qualidade (Fase 2)
+pytest>=8.0.0
+pytest-mock>=3.12.0
+
+# Empacotamento e Distribuição (.exe)
+pyinstaller>=6.0.0

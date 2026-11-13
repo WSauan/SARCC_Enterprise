@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Inicia, para ou reinicia um serviço de forma segura via Base64.
+    Inicia, para ou reinicia um serviço de forma segura via Base64 (sem passar -Force no Start-Service).
 #>
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
@@ -17,19 +17,28 @@ $LogData = @{
     StatusFinal = "SUCESSO"
     Detalhes    = @(
         "Alvo: Serviço '$svcName'",
-        "Comando executado: ${action}-Service -Name '$svcName' -Force"
+        "Ação solicitada: $action"
     )
-    Mensagem = "O serviço '$svcName' foi $acaoPt com sucesso."
+    Mensagem    = "O serviço '$svcName' foi $acaoPt com sucesso."
 }
 
 try {
-    & "${action}-Service" -Name $svcName -Force -ErrorAction Stop
+    switch ($action) {
+        "Start"   { Start-Service -Name $svcName -ErrorAction Stop }
+        "Stop"    { Stop-Service -Name $svcName -Force -ErrorAction Stop }
+        "Restart" { Restart-Service -Name $svcName -Force -ErrorAction Stop }
+        default   { throw "Ação de serviço desconhecida: $action" }
+    }
     Start-Sleep -Seconds 2
     $checkSvc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
-    $LogData.Detalhes += "Status atual após comando: $($checkSvc.Status)"
-    @{ Data = @($LogData) } | ConvertTo-Json -Depth 4 -Compress | Write-Output
+    if ($checkSvc) {
+        $LogData.Detalhes += "Status atual após comando: $($checkSvc.Status)"
+    }
 } catch {
     $LogData.StatusFinal = "ERRO"
     $LogData.Mensagem = "Falha na ação $action do serviço '$svcName': $($_.Exception.Message)"
+    $LogData.Detalhes += "Erro: $($_.Exception.Message)"
+} finally {
+    $LogData.Fim = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     @{ Data = @($LogData) } | ConvertTo-Json -Depth 4 -Compress | Write-Output
 }

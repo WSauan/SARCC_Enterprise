@@ -1,29 +1,49 @@
 <#
 .SYNOPSIS
-    Remove múltiplas tarefas e apaga os scripts residuais.
+    Remove múltiplas tarefas agendadas de forma independente e apaga os scripts residuais.
 #>
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $ErrorActionPreference = 'SilentlyContinue'
 
-# Recebe os nomes separados por vírgula e divide-os num Array
 $TaskNamesStr = '{{task_names}}'
-$TaskNames = $TaskNamesStr -split ","
-$Count = 0
+$TaskNames = @($TaskNamesStr -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$RemovedCount = 0
+$Erros = @()
 
-try {
-    foreach ($TaskName in $TaskNames) {
-        $t = $TaskName.Trim()
-        if (-not $t) { continue }
-        
-        Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction Stop
-        
-        # Higiene: apaga o script base64 associado
-        $ScriptPath = "C:\ProgramData\SARCC\Scripts\$t.ps1"
-        if (Test-Path $ScriptPath) { Remove-Item -Path $ScriptPath -Force }
-        $Count++
-    }
-    @{ StatusFinal = "SUCESSO"; Mensagem = "$Count tarefa(s) removida(s) com sucesso." } | ConvertTo-Json -Compress
-} catch {
-    @{ StatusFinal = "ERRO"; Mensagem = $_.Exception.Message } | ConvertTo-Json -Compress
+$LogData = @{
+    Script      = "Remover Tarefas Agendadas"
+    Inicio      = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    Computador  = $env:COMPUTERNAME
+    StatusFinal = "SUCESSO"
+    Mensagem    = ""
+    Detalhes    = @()
 }
+
+foreach ($t in $TaskNames) {
+    try {
+        Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction Stop
+        $ScriptPath = "C:\ProgramData\SARCC\Scripts\$t.ps1"
+        if (Test-Path -LiteralPath $ScriptPath) {
+            Remove-Item -LiteralPath $ScriptPath -Force -ErrorAction SilentlyContinue
+        }
+        $RemovedCount++
+        $LogData.Detalhes += "Removida: $t"
+    } catch {
+        $Erros += "$t ($($_.Exception.Message))"
+        $LogData.Detalhes += "Falha ao remover '$t': $($_.Exception.Message)"
+    }
+}
+
+if ($Erros.Count -gt 0 -and $RemovedCount -eq 0) {
+    $LogData.StatusFinal = "ERRO"
+    $LogData.Mensagem = "Falha ao remover tarefa(s): $($Erros -join '; ')"
+} elseif ($Erros.Count -gt 0) {
+    $LogData.StatusFinal = "ALERTA"
+    $LogData.Mensagem = "$RemovedCount tarefa(s) removida(s), mas $($Erros.Count) falharam."
+} else {
+    $LogData.Mensagem = "$RemovedCount tarefa(s) removida(s) com sucesso."
+}
+
+$LogData.Fim = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+$LogData | ConvertTo-Json -Depth 3 -Compress | Write-Output
