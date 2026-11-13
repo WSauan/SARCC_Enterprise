@@ -1,25 +1,28 @@
-import os
 from pathlib import Path
-from typing import Any
 from core.logger import get_logger
 from core.config import get_ps_scripts_dir
 
 log = get_logger(__name__)
 
+
 class PsTemplateError(Exception):
     pass
+
 
 def load_ps_template(category: str, template_name: str, **kwargs) -> str:
     base_dir = get_ps_scripts_dir()
     script_path = base_dir / category / f"{template_name}.ps1"
-    
+
     if not script_path.exists():
         error_msg = f"Ficheiro não encontrado: {script_path}"
         log.error(error_msg)
         raise PsTemplateError(error_msg)
-        
+
     try:
-        content = script_path.read_text(encoding='utf-8')
+        # utf-8-sig + lstrip('\ufeff') removem qualquer BOM simples ou duplicado no início do script
+        with open(script_path, "r", encoding="utf-8-sig") as f:
+            content = f.read().lstrip("\ufeff")
+
         for key, value in kwargs.items():
             placeholder = f"{{{{{key}}}}}"
             if isinstance(value, bool):
