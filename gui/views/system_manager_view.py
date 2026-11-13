@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from core.remote_connection import RemoteConnectionManager
-from core.database import DatabaseManager
 from core.ps_loader import load_ps_template, PsTemplateError
+from infrastructure.repositories.execution_repository import ExecutionRepository
 from gui.views.base_view import BaseView
 from gui.views.software_view import fix_mojibake
 
@@ -213,7 +213,6 @@ class SysManagerWorker(QThread):
                 elif json_data.get("StatusFinal") == "ERRO FATAL" and "Mensagem" in json_data:
                     self.error.emit(fix_mojibake(str(json_data["Mensagem"])))
                 elif "StatusFinal" in json_data or "Mensagem" in json_data:
-                    # Preserva o dicionário de resposta para ações diretas (kill_process / manage_service)
                     self.finished.emit([json_data], self.action_type)
                 else:
                     self.finished.emit([], self.action_type)
@@ -224,9 +223,9 @@ class SysManagerWorker(QThread):
 
 
 class SystemManagerView(BaseView):
-    def __init__(self, main_window_ref=None):
+    def __init__(self, main_window_ref=None, exec_repo: ExecutionRepository = None):
         super().__init__(main_window_ref)
-        self.db = DatabaseManager()
+        self.exec_repo = exec_repo or ExecutionRepository()
         self._setup_ui()
 
     def _setup_ui(self):
@@ -636,7 +635,7 @@ class SystemManagerView(BaseView):
             script_name = "Encerrar Processo" if action_type == "kill_process" else "Gerenciar Serviço"
             modulo = "[Gerenciador] Processos" if action_type == "kill_process" else "[Gerenciador] Serviços"
 
-            self.db.save_execution(
+            self.exec_repo.record_execution(
                 target_pc=target,
                 script_name=script_name,
                 status=status_final,

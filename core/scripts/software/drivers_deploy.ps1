@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-    Instalação automática de drivers.
+    Instalação automática de drivers do repositório de rede por modelo de placa-mãe e categoria.
 #>
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $ErrorActionPreference = 'Stop'
 
 $CategoriesStr = '{{categories}}'
-$Categories = $CategoriesStr -split ','
+$Categories = @($CategoriesStr -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $ShareRoot = '{{share_root}}'
 
 $RawUser = '[[ADMIN_USER]]'
@@ -19,6 +19,7 @@ $LogData = @{
     Inicio      = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     Computador  = $env:COMPUTERNAME
     StatusFinal = "SUCESSO"
+    Mensagem    = ""
     Detalhes    = @("Categorias alvo: $CategoriesStr")
 }
 
@@ -33,74 +34,105 @@ try {
         $AdminPass = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($RawPass))
 
         & cmd.exe /c "net use * /delete /y >nul 2>&1"
-        if (Get-PSDrive -Name $DriveLetter -ErrorAction SilentlyContinue) { Remove-PSDrive -Name $DriveLetter -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1 }
+        if (Get-PSDrive -Name $DriveLetter -ErrorAction SilentlyContinue) {
+            Remove-PSDrive -Name $DriveLetter -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1
+        }
 
         try {
             $securePass = ConvertTo-SecureString $AdminPass -AsPlainText -Force
             $cred = New-Object System.Management.Automation.PSCredential ($AdminUser, $securePass)
             $null = New-PSDrive -Name $DriveLetter -PSProvider FileSystem -Root $ShareRoot -Credential $cred -Scope Global -Persist -ErrorAction Stop
-            
+
             $driveCreated = $true
             $SharePath = "${DriveLetter}:"
             $LogData.Detalhes += "[+] PSDrive Z: montado."
         } catch {
-            throw "Falha ao montar rede SMB: $($_.Exception.Message)"
+            # Fallback via net use direto no caminho UNC para que o pnputil.exe tenha acesso em sessão não-interativa
+            & cmd.exe /c "net use `"$ShareRoot`" `"$AdminPass`" /user:`"$AdminUser`" /persistent:no >nul 2>&1"
+            if (Test-Path -LiteralPath $ShareRoot) {
+                $SharePath = $ShareRoot
+                $LogData.Detalhes += "[+] Share autenticado via sessão UNC direta."
+            } else {
+                throw "Falha ao montar rede SMB: $($_.Exception.Message)"
+            }
         }
     } else {
-        if (-not (Test-Path -LiteralPath $ShareRoot)) { throw "Acesso negado ao share (Modo SSO)." }
+        if (-not (Test-Path -LiteralPath $ShareRoot)) {
+            throw "Acesso negado ao share (Modo SSO)."
+        }
         $SharePath = $ShareRoot
         $LogData.Detalhes += "[+] Acesso ao share via SSO."
     }
 
     $Sys   = Get-CimInstance -ClassName Win32_ComputerSystem
-    $Manuf = $Sys.Manufacturer.Trim() -replace '[^a-zA-Z0-9]', '_'
-    $Model = $Sys.Model.Trim()        -replace '[^a-zA-Z0-9]', '_'
+    $Manuf = if ($Sys.Manufacturer) { $Sys.Manufacturer.Trim() -replace '[^a-zA-Z0-9]', '_' } else { "Generico" }
+    $Model = if ($Sys.Model)        { $Sys.Model.Trim()        -replace '[^a-zA-Z0-9]', '_' } else { "Padrao" }
 
     $CaminhoRede = Join-Path $SharePath "Drivers\COLETAS\$Manuf\$Model"
-    if (-not (Test-Path $CaminhoRede)) { throw "Nenhum backup encontrado na rede para: $Manuf $Model" }
+    if (-not (Test-Path -LiteralPath $CaminhoRede)) {
+        throw "Nenhum backup de drivers encontrado na rede para: $Manuf / $Model"
+    }
 
-    $Infs = Get-ChildItem -Path $CaminhoRede -Filter "*.inf" -Recurse
+    $Infs = @(Get-ChildItem -Path $CaminhoRede -Filter "*.inf" -Recurse -ErrorAction SilentlyContinue)
     $CountSucesso = 0
     $CountFalha   = 0
 
     foreach ($inf in $Infs) {
-        $content = Get-Content $inf.FullName -TotalCount 35 -ErrorAction SilentlyContinue
+        $content = Get-Content -LiteralPath $inf.FullName -TotalCount 120 -ErrorAction SilentlyContinue
         $ClassName = "Desconhecido"
-        
+
         if ($content) {
             foreach ($line in $content) {
-                if ($line -match "Class\s*=\s*([a-zA-Z0-9_]+)") {
-                    $ClassName = $matches[1]
+                if ($line -match "^\s*Class\s*=\s*([a-zA-Z0-9_\-]+)") {
+                    $ClassName = $matches[1].Trim()
                     break
                 }
             }
         }
 
         $Match = $false
-        foreach ($cat in $Categories) {
-            $catTrimmed = $cat.Trim()
-            if ($catTrimmed -eq "Camera_Image" -and $ClassName -match "(?i)^(Camera|Image)$") { $Match = $true; break }
-            elseif ($ClassName -match "(?i)^$catTrimmed$") { $Match = $true; break }
+        foreach ($catTrimmed in $Categories) {
+            if ($catTrimmed -eq "Camera_Image" -and $ClassName -match "(?i)^(Camera|Image)$") {
+                $Match = $true
+                break
+            } elseif ($ClassName -match "(?i)^$([regex]::Escape($catTrimmed))$") {
+                $Match = $true
+                break
+            }
         }
 
         if ($Match) {
-            $out = pnputil.exe /add-driver $inf.FullName /install 2>&1
+            $out = & pnputil.exe /add-driver "$($inf.FullName)" /install 2>&1
             $outStr = $out -join " "
 
-            if ($outStr -match "Successfully|êxito" -or $LASTEXITCODE -in @(0, 3010, 259)) {
+            if ($outStr -match "Successfully|êxito|exito" -or $LASTEXITCODE -in @(0, 3010, 259)) {
                 $LogData.Detalhes += "-> INSTALADO: [$ClassName] $($inf.Name)"
                 $CountSucesso++
             } else {
+                $LogData.Detalhes += "-> FALHA: [$ClassName] $($inf.Name) (Código $LASTEXITCODE)"
                 $CountFalha++
             }
         }
     }
-    $LogData.Detalhes += "Deploy concluido. $CountSucesso instalados, $CountFalha falhas."
+
+    $ResumoMsg = "Deploy concluído ($Manuf $Model): $CountSucesso instalado(s), $CountFalha falha(s)."
+    $LogData.Mensagem = $ResumoMsg
+    $LogData.Detalhes += $ResumoMsg
+    if ($CountFalha -gt 0 -and $CountSucesso -eq 0) {
+        $LogData.StatusFinal = "ERRO"
+    }
 } catch {
     $LogData.StatusFinal = "ERRO"
+    $LogData.Mensagem = "Falha no deploy de drivers: $($_.Exception.Message)"
     $LogData.Detalhes += "Falha: $($_.Exception.Message)"
 } finally {
-    if ($driveCreated) { Remove-PSDrive -Name $DriveLetter -Force -ErrorAction SilentlyContinue }
+    if ($driveCreated) {
+        Remove-PSDrive -Name $DriveLetter -Force -ErrorAction SilentlyContinue
+    }
+    if ($UseCredentials) {
+        & cmd.exe /c "net use `"$ShareRoot`" /delete /y >nul 2>&1"
+    }
     $LogData.Fim = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     $LogData | ConvertTo-Json -Depth 3 -Compress | Write-Output
 }

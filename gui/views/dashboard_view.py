@@ -1,5 +1,4 @@
 import os
-import json
 import shutil
 import subprocess
 import socket
@@ -8,15 +7,15 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QGroupBox,
-    QGridLayout, QTextEdit, QComboBox, QMessageBox, QProgressBar, QScrollArea, QInputDialog,
+    QGridLayout, QComboBox, QMessageBox, QProgressBar, QScrollArea, QInputDialog,
     QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QApplication
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from core.remote_connection import RemoteConnectionManager
 from core.task_queue import TaskQueueManager
-from core.database import DatabaseManager
 from core.ps_loader import load_ps_template, PsTemplateError
+from infrastructure.repositories.execution_repository import ExecutionRepository
 from gui.views.base_view import BaseView
 
 
@@ -225,10 +224,10 @@ class TelemetryWorker(QThread):
 class DashboardView(BaseView):
     NETWORK_SOFTWARE_SHARE = r"\\hul-vp-imagem-cc\netshared\Softwares"
 
-    def __init__(self, main_window_ref=None):
+    def __init__(self, main_window_ref=None, exec_repo: ExecutionRepository = None):
         super().__init__(main_window_ref)
-        self.queue_manager = getattr(main_window_ref, 'queue_manager', None) or TaskQueueManager(max_threads=5)
-        self.db = DatabaseManager()
+        self.queue_manager = getattr(main_window_ref, "queue_manager", None) or TaskQueueManager(max_threads=5)
+        self.exec_repo = exec_repo or ExecutionRepository()
         self.is_fetching = False
         self._last_anydesk_id = ""
         self._setup_ui()
@@ -558,7 +557,6 @@ class DashboardView(BaseView):
 
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            # 1. Tenta localizar um instalador no compartilhamento de rede
             if os.path.exists(self.NETWORK_SOFTWARE_SHARE):
                 for fname in os.listdir(self.NETWORK_SOFTWARE_SHARE):
                     low = fname.lower()
@@ -576,7 +574,6 @@ class DashboardView(BaseView):
                             )
                         return True
 
-            # 2. Fallback via Winget na máquina local do técnico
             winget_exe = shutil.which("winget") or os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps\winget.exe")
             if winget_exe and os.path.exists(winget_exe):
                 res = subprocess.run(
@@ -620,7 +617,6 @@ class DashboardView(BaseView):
                     else:
                         raise
             elif tool == "AnyDesk":
-                # Se a telemetria já obteve o ID numérico do AnyDesk do alvo, usa o ID limpo; caso contrário, usa o hostname/IP
                 anydesk_target = self._last_anydesk_id if self._last_anydesk_id else target
                 try:
                     conn.abrir_anydesk(anydesk_target)
@@ -632,7 +628,7 @@ class DashboardView(BaseView):
             elif tool == "Assistência Rápida":
                 subprocess.Popen("start quickassist", shell=True)
 
-            self.db.save_execution(
+            self.exec_repo.record_execution(
                 target_pc=target if target else "Sessão Local",
                 script_name=f"Acesso Remoto ({tool})",
                 status="SUCESSO",
@@ -641,7 +637,7 @@ class DashboardView(BaseView):
                 module="[Dashboard] Conexão"
             )
         except Exception as e:
-            self.db.save_execution(
+            self.exec_repo.record_execution(
                 target_pc=target if target else "Sessão Local",
                 script_name=f"Acesso Remoto ({tool})",
                 status="ERRO",
@@ -696,7 +692,7 @@ class DashboardView(BaseView):
             sock.close()
 
             target_log = alvo_text if alvo_text else mac_clean
-            self.db.save_execution(
+            self.exec_repo.record_execution(
                 target_pc=target_log,
                 script_name="Wake-on-LAN",
                 status="SUCESSO",
@@ -718,7 +714,7 @@ class DashboardView(BaseView):
 
         except Exception as e:
             target_log = alvo_text if alvo_text else mac_clean
-            self.db.save_execution(
+            self.exec_repo.record_execution(
                 target_pc=target_log,
                 script_name="Wake-on-LAN",
                 status="ERRO",
