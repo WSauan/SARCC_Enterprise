@@ -1,18 +1,28 @@
 import os
 import re
 from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QPalette
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                             QGroupBox, QScrollArea, QPushButton, QApplication,
-                             QMessageBox, QTabWidget, QTextBrowser)
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QGroupBox, QScrollArea, QPushButton, QApplication,
+    QMessageBox, QTabWidget, QTextBrowser
+)
 from PyQt6.QtCore import Qt
-from gui.views.base_view import BaseView
+from gui.views.base_view import BaseView, read_text_file_safe
 from core.resources import resource_path
+from core.version import __version__
 from core.logger import get_logger
 
 log = get_logger(__name__)
 
+APP_VERSION = __version__
 
-APP_VERSION = "2.7.0"
+
+def strip_basic_html(html_text: str) -> str:
+    """Converte tags básicas de formatação HTML (<br>, <b>, <i>) em texto limpo para área de transferência."""
+    if not html_text:
+        return ""
+    text = html_text.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+    return re.sub(r"</?[bi]>", "", text)
 
 
 class HelpView(BaseView):
@@ -29,22 +39,17 @@ class HelpView(BaseView):
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #4a90e2;")
         main_layout.addWidget(title)
 
-        # --- Sistema de abas ---
         tabs = QTabWidget()
         tabs.addTab(self._build_about_tab(), "📖 Sobre & Firewall")
         tabs.addTab(self._build_changelog_tab(), "🆕 Novidades")
         main_layout.addWidget(tabs)
 
-    # ------------------------------------------------------------------
-    # ABA 1 — Sobre + Requisitos de Firewall
-    # ------------------------------------------------------------------
     def _build_about_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 10, 0, 0)
         layout.setSpacing(20)
 
-        # 1. Informações de Autoria
         group_about = QGroupBox("Autoria e Licenciamento")
         layout_about = QVBoxLayout(group_about)
         layout_about.setContentsMargins(15, 20, 15, 15)
@@ -65,7 +70,6 @@ class HelpView(BaseView):
         layout_about.addWidget(lbl_about)
         layout.addWidget(group_about)
 
-        # 2. Requisitos de Firewall
         group_fw = QGroupBox("Requisitos de Infraestrutura (Regras de Firewall e Roteamento)")
         layout_fw = QVBoxLayout(group_fw)
         layout_fw.setContentsMargins(15, 20, 15, 15)
@@ -129,25 +133,20 @@ class HelpView(BaseView):
         layout.addWidget(group_fw)
         layout.addStretch()
 
-        # Envolve em scroll para telas pequenas
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
         scroll.setWidget(container)
         return scroll
 
-    # ------------------------------------------------------------------
-    # ABA 2 — Novidades / Changelog
-    # ------------------------------------------------------------------
     def _build_changelog_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(16, 16, 16, 16)   # ← respiro em toda a aba
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        # Cabeçalho com versão atual
         header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 4)       # ← respiro vertical
+        header.setContentsMargins(0, 0, 0, 4)
         header.setSpacing(12)
 
         version_badge = QLabel(f"  v{APP_VERSION}  ")
@@ -173,19 +172,16 @@ class HelpView(BaseView):
         header.addWidget(btn_refresh)
         layout.addLayout(header)
 
-        # Visualizador de Markdown — estilos aplicados dinamicamente
-        # por reload_changelog() conforme o tema atual.
         self.txt_changelog = QTextBrowser()
         self.txt_changelog.setOpenExternalLinks(True)
         self.txt_changelog.setFrameShape(QTextBrowser.Shape.NoFrame)
         layout.addWidget(self.txt_changelog)
 
-        # Popula na primeira exibição
         self.reload_changelog()
         return container
 
     def reload_changelog(self):
-        """Lê o CHANGELOG.md, renderiza em Markdown, e força cores temáticas."""
+        """Lê o CHANGELOG.md, renderiza em Markdown e aplica cores conforme o tema atual."""
         path = resource_path("CHANGELOG.md")
         if not os.path.exists(path):
             self.txt_changelog.setPlainText(
@@ -195,15 +191,11 @@ class HelpView(BaseView):
             return
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                conteudo = f.read()
+            conteudo = read_text_file_safe(path)
 
-                        # Detecta tema atual
             is_dark = getattr(self.main_window, "is_dark_theme", True)
             ACCENT = "#4a90e2"
 
-            # Pega a cor de fundo REAL do container pai (QTabWidget pane)
-            # — garante match perfeito com o tema atual, sem hardcode.
             parent_widget = self.txt_changelog.parent()
             if parent_widget is not None:
                 body_bg = parent_widget.palette().color(QPalette.ColorRole.Window).name()
@@ -225,7 +217,6 @@ class HelpView(BaseView):
                 code_color = "#c7254e"
                 hr_color = "#d1d5db"
 
-            # 1) CSS no documento — incluindo background explícito
             self.txt_changelog.document().setDefaultStyleSheet(f"""
                 body {{ background-color: {body_bg}; color: {text_color}; font-size: 15px; }}
                 p, li {{ color: {text_color}; }}
@@ -243,10 +234,6 @@ class HelpView(BaseView):
                               padding-left: 10px; margin-left: 0; }}
             """)
 
-            # 2) Aplica CSS ao widget E ao viewport interno
-            #    (QTextBrowser herda de QAbstractScrollArea — o viewport
-            #    interno não segue o QSS do widget pai; precisa ser
-            #    estilizado separadamente)
             self.txt_changelog.setStyleSheet(
                 f"QTextBrowser {{ "
                 f"  background-color: {body_bg}; "
@@ -256,16 +243,10 @@ class HelpView(BaseView):
                 f"  padding: 12px; "
                 f"}}"
             )
-            # Alinha o viewport (área de rolagem interna) com o mesmo fundo
-            self.txt_changelog.viewport().setStyleSheet(
-                f"background-color: {body_bg};"
-            )
+            self.txt_changelog.viewport().setStyleSheet(f"background-color: {body_bg};")
             self.txt_changelog.viewport().setAutoFillBackground(True)
 
-            # 3) Renderiza Markdown
             self.txt_changelog.setMarkdown(conteudo)
-
-            # 4) Força a cor dos links
             self._force_link_color(link_color)
 
             log.info(
@@ -277,15 +258,6 @@ class HelpView(BaseView):
             log.error(f"Falha ao ler CHANGELOG.md: {e}", exc_info=True)
 
     def _force_link_color(self, color_hex: str):
-        """Força a cor de todos os links (<a>) no QTextDocument.
-
-        Por que isso é necessário?
-        O `setMarkdown()` do Qt aplica um formato de caractere embutido
-        (via QTextCharFormat) em cada <a> com a cor padrão azul escuro do
-        sistema. Nem QSS, nem QPalette, nem CSS no HTML sobrescrevem esse
-        formato. A única forma é iterar fragmento por fragmento e
-        reescrever o foreground diretamente.
-        """
         doc = self.txt_changelog.document()
         color = QColor(color_hex)
         block = doc.begin()
@@ -311,24 +283,14 @@ class HelpView(BaseView):
             block = block.next()
 
     def copy_to_clipboard(self):
-        clean_text = (
-            self.firewall_text
-            .replace("<b>", "").replace("</b>", "")
-            .replace("<br>", "\n")
-            .replace("<i>", "").replace("</i>", "")
-        )
+        clean_text = strip_basic_html(self.firewall_text)
         QApplication.clipboard().setText(clean_text)
         QMessageBox.information(
             self, "Copiado",
             "A documentação técnica foi copiada para a área de transferência."
         )
-    def showEvent(self, event):
-        """Reaplica o Markdown sempre que a aba ganha foco.
 
-        Isso garante que ao trocar o tema, o conteúdo seja re-renderizado
-        com as cores novas (o widget é restilizado pelo app_window, mas o
-        documento interno precisa ser re-aplicado).
-        """
+    def showEvent(self, event):
         super().showEvent(event)
         if hasattr(self, "txt_changelog"):
             self.reload_changelog()

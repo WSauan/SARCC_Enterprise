@@ -20,12 +20,13 @@ class CredentialDialog(QDialog):
         self.remember = has_saved
 
         self._setup_ui(user_display, has_saved)
-    
+
     def _toggle_password_visibility(self, checked: bool):
         self.inp_password.setEchoMode(
             QLineEdit.EchoMode.Normal if checked
             else QLineEdit.EchoMode.Password
         )
+
     def _setup_ui(self, user_display: str, has_saved: bool):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -42,7 +43,6 @@ class CredentialDialog(QDialog):
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        # Container com olho embutido: QLineEdit + botão de toggle
         pwd_row = QHBoxLayout()
         pwd_row.setSpacing(6)
 
@@ -51,6 +51,7 @@ class CredentialDialog(QDialog):
         self.inp_password.setFixedHeight(32)
         self.inp_password.setPlaceholderText("Senha do AD")
         self.inp_password.setStyleSheet("padding: 0 10px;")
+        self.inp_password.returnPressed.connect(self._on_ok)
 
         self.btn_toggle_pwd = QPushButton("👁")
         self.btn_toggle_pwd.setFixedSize(36, 32)
@@ -62,11 +63,7 @@ class CredentialDialog(QDialog):
             "border-radius: 4px; font-size: 14px; } "
             "QPushButton:checked { background: #4a90e2; color: white; }"
         )
-        self.btn_toggle_pwd.toggled.connect(
-            lambda on: self.inp_password.setEchoMode(
-                QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
-            )
-        )
+        self.btn_toggle_pwd.toggled.connect(self._toggle_password_visibility)
 
         pwd_row.addWidget(self.inp_password, stretch=1)
         pwd_row.addWidget(self.btn_toggle_pwd)
