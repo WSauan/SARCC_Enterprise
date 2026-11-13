@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 import subprocess
 import socket
 import time
@@ -8,7 +9,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QGroupBox,
     QGridLayout, QTextEdit, QComboBox, QMessageBox, QProgressBar, QScrollArea, QInputDialog,
-    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QApplication
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
@@ -63,7 +64,7 @@ def _sort_profiles(profiles: list, logged_names: set) -> list:
 
 
 class ProfilesDialog(QDialog):
-    """Lista completa de perfis de usuário (Normais + Temporários) do endpoint alvo."""
+    """Lista completa de perfis de utilizador (Normais + Temporários) do endpoint alvo."""
 
     def __init__(self, profiles: list, logged_names: set, target_pc: str, parent=None):
         super().__init__(parent)
@@ -222,11 +223,14 @@ class TelemetryWorker(QThread):
 
 
 class DashboardView(BaseView):
+    NETWORK_SOFTWARE_SHARE = r"\\hul-vp-imagem-cc\netshared\Softwares"
+
     def __init__(self, main_window_ref=None):
         super().__init__(main_window_ref)
         self.queue_manager = getattr(main_window_ref, 'queue_manager', None) or TaskQueueManager(max_threads=5)
         self.db = DatabaseManager()
         self.is_fetching = False
+        self._last_anydesk_id = ""
         self._setup_ui()
 
     def _setup_ui(self):
@@ -540,6 +544,58 @@ class DashboardView(BaseView):
         super().showEvent(event)
         self.inp_target.setFocus()
 
+    def _install_missing_client_tool(self, tool_name: str, winget_id: str, net_keyword: str) -> bool:
+        """Oferece auto-instalação local (via Rede SMB ou Winget) caso falte a ferramenta na máquina do técnico."""
+        reply = QMessageBox.question(
+            self,
+            f"{tool_name} Não Encontrado",
+            f"O utilitário '{tool_name}' não foi encontrado nesta estação de trabalho.\n\n"
+            f"Deseja que o SARCC instale o {tool_name} automaticamente agora na sua máquina?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return False
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            # 1. Tenta localizar um instalador no compartilhamento de rede
+            if os.path.exists(self.NETWORK_SOFTWARE_SHARE):
+                for fname in os.listdir(self.NETWORK_SOFTWARE_SHARE):
+                    low = fname.lower()
+                    if net_keyword.lower() in low and low.endswith((".exe", ".msi")):
+                        installer_path = os.path.join(self.NETWORK_SOFTWARE_SHARE, fname)
+                        if low.endswith(".msi"):
+                            subprocess.run(
+                                ["msiexec.exe", "/i", installer_path, "/qn", "/norestart"],
+                                creationflags=subprocess.CREATE_NO_WINDOW
+                            )
+                        else:
+                            subprocess.run(
+                                [installer_path, "/S", "/silent", "/quiet", "/norestart"],
+                                creationflags=subprocess.CREATE_NO_WINDOW
+                            )
+                        return True
+
+            # 2. Fallback via Winget na máquina local do técnico
+            winget_exe = shutil.which("winget") or os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps\winget.exe")
+            if winget_exe and os.path.exists(winget_exe):
+                res = subprocess.run(
+                    [
+                        winget_exe, "install", "--id", winget_id,
+                        "--exact", "--silent",
+                        "--accept-package-agreements", "--accept-source-agreements",
+                        "--disable-interactivity", "--source", "winget"
+                    ],
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                return res.returncode == 0
+
+            return False
+        except Exception:
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+
     def action_connect(self):
         target = self.inp_target.text().strip()
         tool = self.cmb_remote.currentText()
@@ -550,13 +606,29 @@ class DashboardView(BaseView):
             self.inp_target.setFocus()
             return
 
+        conn = RemoteConnectionManager()
+
         try:
             if tool == "RDP (Windows)":
                 subprocess.Popen(["mstsc", f"/v:{target}"])
             elif tool == "VNC Viewer":
-                RemoteConnectionManager().abrir_acesso_remoto(target)
+                try:
+                    conn.abrir_acesso_remoto(target)
+                except FileNotFoundError:
+                    if self._install_missing_client_tool("UltraVNC Viewer", "uvncbvba.UltraVNC", "vnc"):
+                        conn.abrir_acesso_remoto(target)
+                    else:
+                        raise
             elif tool == "AnyDesk":
-                subprocess.Popen(["anydesk", target])
+                # Se a telemetria já obteve o ID numérico do AnyDesk do alvo, usa o ID limpo; caso contrário, usa o hostname/IP
+                anydesk_target = self._last_anydesk_id if self._last_anydesk_id else target
+                try:
+                    conn.abrir_anydesk(anydesk_target)
+                except FileNotFoundError:
+                    if self._install_missing_client_tool("AnyDesk", "AnyDeskSoftwareGmbH.AnyDesk", "anydesk"):
+                        conn.abrir_anydesk(anydesk_target)
+                    else:
+                        raise
             elif tool == "Assistência Rápida":
                 subprocess.Popen("start quickassist", shell=True)
 
@@ -577,7 +649,11 @@ class DashboardView(BaseView):
                 technician=executor,
                 module="[Dashboard] Conexão"
             )
-            QMessageBox.warning(self, "Erro", f"O executável para '{tool}' não foi encontrado ou falhou ao iniciar.\nDetalhe: {e}")
+            QMessageBox.warning(
+                self,
+                "Erro ao Iniciar Ferramenta",
+                f"Não foi possível abrir '{tool}'.\n\nDetalhe: {e}"
+            )
 
     def on_wol_success(self, target):
         self.btn_wol.setText("📡 Wake-on-LAN")
@@ -823,7 +899,10 @@ class DashboardView(BaseView):
         else:
             self.lbl_vnc.setText(f"VNC: <span style='color: #888888; font-weight: bold;'>{vnc}</span>")
 
-        anydesk = data.get('AnyDesk', 'N/A')
+        anydesk = str(data.get('AnyDesk', 'N/A'))
+        anydesk_digits = anydesk.replace(" ", "").strip()
+        self._last_anydesk_id = anydesk_digits if anydesk_digits.isdigit() else ""
+
         if anydesk != "Não Instalado":
             self.lbl_anydesk.setText(f"AnyDesk ID: <span style='color: #4CAF50; font-weight: bold;'>{anydesk}</span>")
         else:

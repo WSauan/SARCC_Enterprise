@@ -1,3 +1,4 @@
+import pytest
 from core.remote_connection import RemoteConnectionManager
 
 
@@ -36,3 +37,39 @@ def test_execute_script_falls_back_to_wmi_when_winrm_fails(mocker):
     mock_wmi.assert_called_once()
     assert res["status"] == "Sucesso"
     assert "OK via WMI" in res["log_saida"]
+
+
+def test_localizar_vnc_viewer_finds_portable_binary(tmp_path, mocker):
+    """Verifica se localizar_vnc_viewer prioriza o executável portátil na pasta do SARCC."""
+    fake_vnc = tmp_path / "vncviewer.exe"
+    fake_vnc.write_bytes(b"MZ")
+
+    conn = RemoteConnectionManager()
+    mocker.patch.object(conn, "_get_search_dirs", return_value=[str(tmp_path)])
+
+    found = conn.localizar_vnc_viewer()
+    assert found == str(fake_vnc)
+
+
+def test_abrir_anydesk_raises_filenotfound_when_missing(mocker):
+    """Garante que abrir_anydesk levanta FileNotFoundError quando não instalado, acionando o fallback da UI."""
+    conn = RemoteConnectionManager()
+    mocker.patch.object(conn, "localizar_anydesk", return_value=None)
+
+    with pytest.raises(FileNotFoundError):
+        conn.abrir_anydesk("123456789")
+
+
+def test_abrir_acesso_remoto_includes_options_vnc_when_available(tmp_path, mocker):
+    """Verifica se o VNC Viewer recebe automaticamente o ficheiro -config options.vnc quando presente."""
+    fake_vnc = tmp_path / "vncviewer.exe"
+    fake_vnc.write_bytes(b"MZ")
+    fake_opt = tmp_path / "options.vnc"
+    fake_opt.write_text("[connection]", encoding="utf-8")
+
+    conn = RemoteConnectionManager()
+    mocker.patch.object(conn, "_get_search_dirs", return_value=[str(tmp_path)])
+    mock_popen = mocker.patch("core.remote_connection.subprocess.Popen")
+
+    conn.abrir_acesso_remoto("10.8.128.14")
+    mock_popen.assert_called_once_with([str(fake_vnc), "10.8.128.14", "-config", str(fake_opt)])
