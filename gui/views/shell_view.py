@@ -1,34 +1,50 @@
 import base64
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QLineEdit, QPushButton, QTextEdit, QGroupBox, 
-                             QMessageBox, QComboBox)
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QTextEdit, QGroupBox,
+    QMessageBox, QComboBox
+)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
 
 from core.remote_connection import RemoteConnectionManager
 from core.ps_loader import load_ps_template, PsTemplateError
 from gui.views.base_view import BaseView
+from gui.views.software_view import fix_mojibake
 
 # Catálogo de atalhos de diagnóstico de rede
 NETWORK_SHORTCUTS = [
-    ("Ping Rápido (4 pacotes)",           "ping -n 4 8.8.8.8"),
-    ("Ping Contínuo (30 pacotes)",        "ping -n 30 8.8.8.8"),
-    ("Ping no Gateway Padrão",            "$gw = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop; if ($gw) { ping -n 4 $gw } else { Write-Output 'Gateway padrao nao encontrado' }"),
-    ("Tracert (rota até 8.8.8.8)",         "tracert -d -h 15 8.8.8.8"),
-    ("NSLookup (DNS A do alvo)",           "Resolve-DnsName -Name {target} -Type A -ErrorAction SilentlyContinue | Format-Table -AutoSize"),
-    ("Reverso (PTR do alvo)",              "Resolve-DnsName -Name {target} -Type PTR -ErrorAction SilentlyContinue | Format-Table -AutoSize"),
-    ("Test-NetConnection (WinRM 5985)",    "Test-NetConnection -ComputerName localhost -Port 5985"),
-    ("Test-NetConnection (RDP 3389)",      "Test-NetConnection -ComputerName localhost -Port 3389"),
-    ("Config de Rede (IP/Gateway)",        "Get-NetIPConfiguration | Format-List"),
-    ("Servidores DNS Configurados",        "Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses } | Format-Table -AutoSize"),
-    ("Tabela de Rotas",                    "Get-NetRoute -AddressFamily IPv4 | Sort-Object RouteMetric | Format-Table -AutoSize"),
-    ("Conexões Ativas (ESTABLISHED)",      "netstat -ano | findstr ESTABLISHED | Select-Object -First 30"),
-    ("Portas em Escuta (LISTENING)",       "netstat -ano | findstr LISTENING | Select-Object -First 30"),
-    ("ARP (vizinhos de rede)",             "arp -a"),
-    ("Cache DNS Local",                    "Get-DnsClientCache | Select-Object -First 30 | Format-Table -AutoSize"),
-    ("Wi-Fi / Redes Visíveis",             "netsh wlan show networks mode=bssid 2>$null | Select-Object -First 40"),
-    ("Firewall (Perfis)",                  "Get-NetFirewallProfile | Format-Table Name, Enabled, DefaultInboundAction -AutoSize"),
+    ("Ping Rápido (4 pacotes)",        "ping -n 4 8.8.8.8"),
+    ("Ping Contínuo (30 pacotes)",     "ping -n 30 8.8.8.8"),
+    ("Ping no Gateway Padrão",         "$gw = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop; if ($gw) { ping -n 4 $gw } else { Write-Output 'Gateway padrao nao encontrado' }"),
+    ("Tracert (rota até 8.8.8.8)",      "tracert -d -h 15 8.8.8.8"),
+    ("NSLookup (DNS A do alvo)",        "Resolve-DnsName -Name {target} -Type A -ErrorAction SilentlyContinue | Format-Table -AutoSize"),
+    ("Reverso (PTR do alvo)",           "Resolve-DnsName -Name {target} -Type PTR -ErrorAction SilentlyContinue | Format-Table -AutoSize"),
+    ("Test-NetConnection (WinRM 5985)", "Test-NetConnection -ComputerName localhost -Port 5985"),
+    ("Test-NetConnection (RDP 3389)",   "Test-NetConnection -ComputerName localhost -Port 3389"),
+    ("Config de Rede (IP/Gateway)",     "Get-NetIPConfiguration | Format-List"),
+    ("Servidores DNS Configurados",     "Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses } | Format-Table -AutoSize"),
+    ("Tabela de Rotas",                 "Get-NetRoute -AddressFamily IPv4 | Sort-Object RouteMetric | Format-Table -AutoSize"),
+    ("Conexões Ativas (ESTABLISHED)",   "netstat -ano | findstr ESTABLISHED | Select-Object -First 30"),
+    ("Portas em Escuta (LISTENING)",    "netstat -ano | findstr LISTENING | Select-Object -First 30"),
+    ("ARP (vizinhos de rede)",          "arp -a"),
+    ("Cache DNS Local",                 "Get-DnsClientCache | Select-Object -First 30 | Format-Table -AutoSize"),
+    ("Wi-Fi / Redes Visíveis",          "netsh wlan show networks mode=bssid 2>$null | Select-Object -First 40"),
+    ("Firewall (Perfis)",               "Get-NetFirewallProfile | Format-Table Name, Enabled, DefaultInboundAction -AutoSize"),
 ]
+
+
+def format_console_html(raw_text: str) -> str:
+    """Escapa caracteres HTML (<, >, &) e repara UTF-8 antes de converter quebras de linha em <br>."""
+    cleaned = fix_mojibake(str(raw_text or ""))
+    escaped = (
+        cleaned.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\n", "<br>")
+    )
+    return escaped
+
 
 class ShellWorker(QThread):
     finished = pyqtSignal(str)
@@ -40,9 +56,8 @@ class ShellWorker(QThread):
 
     def run(self):
         try:
-            # Codifica o comando em base64 para injetar de forma segura
-            cmd_b64 = base64.b64encode(self.command.encode('utf-8')).decode('ascii')
-            
+            cmd_b64 = base64.b64encode(self.command.encode("utf-8")).decode("ascii")
+
             try:
                 ps_script = load_ps_template("shell", "run_command", command_b64=cmd_b64)
             except PsTemplateError as e:
@@ -51,9 +66,9 @@ class ShellWorker(QThread):
 
             conn = RemoteConnectionManager()
             res = conn.execute_script(self.target_pc, ps_script)
-            
-            saida = res.get("log_saida", "").strip()
-            
+
+            saida = fix_mojibake(res.get("log_saida", "").strip())
+
             if "SARCC_SHELL_ERROR:" in saida:
                 saida = f"[ERRO DE EXECUÇÃO NO POWERSHELL]\n{saida.replace('SARCC_SHELL_ERROR:', '').strip()}"
             elif not saida and res["status"] == "Sucesso":
@@ -64,6 +79,7 @@ class ShellWorker(QThread):
             self.finished.emit(saida)
         except Exception as e:
             self.finished.emit(f"[FALHA CRÍTICA]\n{str(e)}")
+
 
 class ShellView(BaseView):
     def __init__(self, main_window_ref=None):
@@ -82,13 +98,13 @@ class ShellView(BaseView):
         conn_group = QGroupBox("1. Estabelecer Sessão")
         conn_layout = QHBoxLayout()
         conn_layout.setContentsMargins(15, 20, 15, 15)
-        
+
         self.inp_target = QLineEdit()
         self.inp_target.setFixedHeight(32)
         self.inp_target.setPlaceholderText("Ex: HUL-WK-244377E ou localhost")
         self.inp_target.setStyleSheet("padding: 0 10px; font-weight: bold;")
         self.inp_target.textChanged.connect(self._force_uppercase)
-        
+
         conn_layout.addWidget(QLabel("Computador Alvo:"))
         conn_layout.addWidget(self.inp_target)
         conn_layout.addStretch()
@@ -124,7 +140,7 @@ class ShellView(BaseView):
         console_group = QGroupBox("3. Console de Saída")
         console_layout = QVBoxLayout(console_group)
         console_layout.setContentsMargins(15, 20, 15, 15)
-        
+
         self.txt_console = QTextEdit()
         self.txt_console.setReadOnly(True)
         font = QFont("Consolas", 11)
@@ -142,13 +158,13 @@ class ShellView(BaseView):
 
         input_layout = QHBoxLayout()
         input_layout.setSpacing(10)
-        
+
         lbl_prompt = QLabel("PS >")
         lbl_prompt.setStyleSheet(
             "font-weight: bold; font-family: Consolas; font-size: 14px; color: #4a90e2;"
         )
         input_layout.addWidget(lbl_prompt)
-        
+
         self.inp_command = QLineEdit()
         self.inp_command.setFixedHeight(32)
         self.inp_command.setFont(font)
@@ -159,7 +175,7 @@ class ShellView(BaseView):
         self.inp_command.setPlaceholderText("Digite um comando (ex: Get-Process, ipconfig) e pressione Enter...")
         self.inp_command.returnPressed.connect(self.execute_command)
         input_layout.addWidget(self.inp_command)
-        
+
         self.btn_send = QPushButton("Enviar")
         self.btn_send.setFixedHeight(32)
         self.btn_send.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -169,7 +185,7 @@ class ShellView(BaseView):
         )
         self.btn_send.clicked.connect(self.execute_command)
         input_layout.addWidget(self.btn_send)
-        
+
         self.btn_clear = QPushButton("Limpar Tela")
         self.btn_clear.setFixedHeight(32)
         self.btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -200,38 +216,39 @@ class ShellView(BaseView):
         self.inp_command.setText(comando)
         self.execute_command()
 
-    def append_to_console(self, text, is_error=False, is_prompt=False):
+    def append_to_console(self, text: str, is_error: bool = False, is_prompt: bool = False):
         color_style = ""
         if is_error:
             color_style = "color: #d9534f;"
         elif is_prompt:
             color_style = "color: #e67e22;"
 
+        safe_html = format_console_html(text)
         self.txt_console.moveCursor(QTextCursor.MoveOperation.End)
         if color_style:
             self.txt_console.insertHtml(
-                f"<span style='{color_style} white-space: pre-wrap;'>{text}</span><br>"
+                f"<span style='{color_style} white-space: pre-wrap;'>{safe_html}</span><br>"
             )
         else:
             self.txt_console.insertHtml(
-                f"<span style='white-space: pre-wrap;'>{text}</span><br>"
+                f"<span style='white-space: pre-wrap;'>{safe_html}</span><br>"
             )
         self.txt_console.moveCursor(QTextCursor.MoveOperation.End)
 
     def execute_command(self):
         target = self.inp_target.text().strip()
         command = self.inp_command.text().strip()
-        
+
         if not target:
             QMessageBox.warning(self, "Aviso", "Informe o computador alvo antes de enviar comandos.")
             self.inp_target.setFocus()
             return
-            
+
         if not command:
             return
 
         self.append_to_console(f"\n[{target}] PS > {command}", is_prompt=True)
-        
+
         self.inp_command.clear()
         self.inp_command.setEnabled(False)
         self.btn_send.setEnabled(False)
@@ -242,13 +259,10 @@ class ShellView(BaseView):
         self.worker.finished.connect(self.on_command_finished)
         self.worker.start()
 
-    def on_command_finished(self, result_text):
-        safe_text = result_text.replace("\n", "<br>")
-        if "[ERRO" in safe_text or "[FALHA" in safe_text:
-            self.append_to_console(safe_text, is_error=True)
-        else:
-            self.append_to_console(safe_text)
-            
+    def on_command_finished(self, result_text: str):
+        is_err = "[ERRO" in result_text or "[FALHA" in result_text
+        self.append_to_console(result_text, is_error=is_err)
+
         self.inp_command.setEnabled(True)
         self.btn_send.setEnabled(True)
         self.btn_run_shortcut.setEnabled(True)

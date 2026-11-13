@@ -1,17 +1,54 @@
 import json
 import os
 import base64
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QLineEdit, QPushButton, QTableWidget, 
-                             QTableWidgetItem, QHeaderView, QGroupBox, 
-                             QMessageBox, QTabWidget, QComboBox, QDialog,
-                             QTextEdit, QGridLayout, QApplication)
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QTableWidget,
+    QTableWidgetItem, QHeaderView, QGroupBox,
+    QMessageBox, QTabWidget, QComboBox, QDialog,
+    QTextEdit, QGridLayout, QApplication
+)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from core.remote_connection import RemoteConnectionManager
 from core.database import DatabaseManager
 from core.ps_loader import load_ps_template, PsTemplateError
 from gui.views.base_view import BaseView
+from gui.views.software_view import fix_mojibake
+
+
+def safe_int(value, default: int = 0) -> int:
+    """Converte valores (incluindo None ou strings vazias) para int sem levantar exceção."""
+    if value is None or value == "":
+        return default
+    try:
+        return int(float(str(value).replace(",", ".").strip()))
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_float(value, default: float = 0.0) -> float:
+    """Converte valores (incluindo None ou strings com vírgula) para float com segurança."""
+    if value is None or value == "":
+        return default
+    try:
+        return round(float(str(value).replace(",", ".").strip()), 2)
+    except (ValueError, TypeError):
+        return default
+
+
+def normalize_service_status(raw_status) -> tuple[str, Qt.GlobalColor | None]:
+    """Padroniza o status do serviço do Windows (texto em EN/PT ou enum numérico WMI/ServiceController)."""
+    s = fix_mojibake(str(raw_status or "")).strip()
+    low = s.lower()
+    if low in ("running", "4", "em execução", "em execucao"):
+        return "Em Execução", Qt.GlobalColor.green
+    if low in ("stopped", "1", "parado"):
+        return "Parado", Qt.GlobalColor.red
+    if low in ("paused", "7", "pausado"):
+        return "Pausado", Qt.GlobalColor.darkYellow
+    return (s if s else "Desconhecido"), None
+
 
 class EventDetailDialog(QDialog):
     """Dialog para exibir detalhes completos de um evento."""
@@ -30,7 +67,8 @@ class EventDetailDialog(QDialog):
         info_grid.setVerticalSpacing(6)
 
         def mk_label(titulo, valor, cor_valor="#e0e0e0"):
-            lbl = QLabel(f"<b>{titulo}:</b> <span style='color:{cor_valor}'>{valor}</span>")
+            val_clean = fix_mojibake(str(valor))
+            lbl = QLabel(f"<b>{titulo}:</b> <span style='color:{cor_valor}'>{val_clean}</span>")
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             return lbl
 
@@ -53,7 +91,7 @@ class EventDetailDialog(QDialog):
         layout.addWidget(QLabel("<b>Mensagem completa:</b>"))
         txt_msg = QTextEdit()
         txt_msg.setReadOnly(True)
-        txt_msg.setPlainText(str(event_data.get("Mensagem", "Sem mensagem.")))
+        txt_msg.setPlainText(fix_mojibake(str(event_data.get("Mensagem", "Sem mensagem."))))
         txt_msg.setStyleSheet(
             "font-family: Consolas, monospace; font-size: 13px; "
             "background-color: #1e1e1e; color: #d4d4d4; "
@@ -69,9 +107,7 @@ class EventDetailDialog(QDialog):
             "padding: 0 15px; background-color: #5bc0de; color: black; "
             "font-weight: bold; border-radius: 4px;"
         )
-        btn_copy.clicked.connect(
-            lambda: self._copy_to_clipboard(txt_msg.toPlainText())
-        )
+        btn_copy.clicked.connect(lambda: self._copy_to_clipboard(txt_msg.toPlainText()))
         btn_layout.addWidget(btn_copy)
 
         btn_layout.addStretch()
@@ -93,14 +129,15 @@ class EventDetailDialog(QDialog):
 
 
 def _get_level_color(event_data):
-    nivel = str(event_data.get("Nivel", "")).lower()
-    if "critical" in nivel or "crítico" in nivel:
+    nivel = fix_mojibake(str(event_data.get("Nivel", ""))).lower()
+    if "critical" in nivel or "crítico" in nivel or "critico" in nivel:
         return "#f44336"
     elif "error" in nivel or "erro" in nivel:
         return "#f0ad4e"
     elif "warning" in nivel or "aviso" in nivel:
         return "#ffc107"
     return "#e0e0e0"
+
 
 class SysManagerWorker(QThread):
     finished = pyqtSignal(list, str)
@@ -113,8 +150,7 @@ class SysManagerWorker(QThread):
         self.extra_params = extra_params or {}
 
     def _b64(self, text):
-        """Função auxiliar para codificar parâmetros de forma segura."""
-        return base64.b64encode(str(text).encode('utf-8')).decode('ascii')
+        return base64.b64encode(str(text).encode("utf-8")).decode("ascii")
 
     def _build_script(self) -> str:
         if self.action_type == "get_processes":
@@ -166,20 +202,26 @@ class SysManagerWorker(QThread):
 
             if res["status"] == "Sucesso":
                 json_data = res.get("json_data", {})
+                if not isinstance(json_data, dict):
+                    json_data = {}
 
                 if "Data" in json_data:
                     parsed_data = json_data["Data"]
                     if not isinstance(parsed_data, list):
                         parsed_data = [parsed_data] if parsed_data else []
                     self.finished.emit(parsed_data, self.action_type)
-                elif "Mensagem" in json_data and json_data.get("StatusFinal") == "ERRO FATAL":
-                    self.error.emit(json_data["Mensagem"])
+                elif json_data.get("StatusFinal") == "ERRO FATAL" and "Mensagem" in json_data:
+                    self.error.emit(fix_mojibake(str(json_data["Mensagem"])))
+                elif "StatusFinal" in json_data or "Mensagem" in json_data:
+                    # Preserva o dicionário de resposta para ações diretas (kill_process / manage_service)
+                    self.finished.emit([json_data], self.action_type)
                 else:
                     self.finished.emit([], self.action_type)
             else:
-                self.error.emit(res.get("log_saida", "Erro desconhecido na coleta WMI/WinRM."))
+                self.error.emit(fix_mojibake(res.get("log_saida", "Erro desconhecido na coleta WMI/WinRM.")))
         except Exception as e:
-            self.error.emit(str(e))
+            self.error.emit(fix_mojibake(str(e)))
+
 
 class SystemManagerView(BaseView):
     def __init__(self, main_window_ref=None):
@@ -199,47 +241,47 @@ class SystemManagerView(BaseView):
         target_group = QGroupBox("Computador Alvo")
         target_layout = QHBoxLayout(target_group)
         target_layout.setContentsMargins(15, 20, 15, 15)
-        
+
         self.inp_target = QLineEdit()
         self.inp_target.setFixedHeight(32)
         self.inp_target.setPlaceholderText("Ex: HUL-WK-244377E ou 10.8.128.14")
         self.inp_target.setStyleSheet("padding: 0 10px;")
         self.inp_target.textChanged.connect(self._force_uppercase)
-        
+
         target_layout.addWidget(QLabel("Hostname / IP:"))
         target_layout.addWidget(self.inp_target, stretch=1)
         layout.addWidget(target_group)
 
         self.tabs = QTabWidget()
-        
+
         # --- ABA 1: PROCESSOS ---
         self.tab_proc = QWidget()
         proc_layout = QVBoxLayout(self.tab_proc)
-        
+
         proc_controls = QHBoxLayout()
         self.inp_search_proc = QLineEdit()
         self.inp_search_proc.setFixedHeight(32)
         self.inp_search_proc.setPlaceholderText("🔍 Filtrar processos...")
         self.inp_search_proc.setStyleSheet("padding: 0 10px;")
         self.inp_search_proc.textChanged.connect(lambda text: self.filter_table(self.tbl_proc, text))
-        
+
         self.btn_load_proc = QPushButton("↻ Listar Processos")
         self.btn_load_proc.setFixedHeight(32)
         self.btn_load_proc.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_load_proc.setStyleSheet("padding: 0 15px; font-weight: bold; border-radius: 4px;")
         self.btn_load_proc.clicked.connect(lambda: self.run_worker("get_processes"))
-        
+
         self.btn_kill_proc = QPushButton("❌ Encerrar Processo Selecionado")
         self.btn_kill_proc.setFixedHeight(32)
         self.btn_kill_proc.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_kill_proc.setStyleSheet("background-color: #d9534f; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;")
         self.btn_kill_proc.clicked.connect(self.kill_process)
-        
+
         proc_controls.addWidget(self.inp_search_proc, stretch=1)
         proc_controls.addWidget(self.btn_load_proc)
         proc_controls.addWidget(self.btn_kill_proc)
         proc_layout.addLayout(proc_controls)
-        
+
         self.tbl_proc = QTableWidget(0, 4)
         self.tbl_proc.setHorizontalHeaderLabels(["PID", "Nome do Processo", "Memória (MB)", "CPU"])
         self.tbl_proc.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -252,45 +294,45 @@ class SystemManagerView(BaseView):
         # --- ABA 2: SERVIÇOS ---
         self.tab_svc = QWidget()
         svc_layout = QVBoxLayout(self.tab_svc)
-        
+
         svc_controls = QHBoxLayout()
         self.inp_search_svc = QLineEdit()
         self.inp_search_svc.setFixedHeight(32)
         self.inp_search_svc.setPlaceholderText("🔍 Filtrar serviços...")
         self.inp_search_svc.setStyleSheet("padding: 0 10px;")
         self.inp_search_svc.textChanged.connect(lambda text: self.filter_table(self.tbl_svc, text))
-        
+
         self.btn_load_svc = QPushButton("↻ Listar Serviços")
         self.btn_load_svc.setFixedHeight(32)
         self.btn_load_svc.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_load_svc.setStyleSheet("padding: 0 15px; font-weight: bold; border-radius: 4px;")
         self.btn_load_svc.clicked.connect(lambda: self.run_worker("get_services"))
-        
+
         self.btn_start_svc = QPushButton("▶ Iniciar")
         self.btn_start_svc.setFixedHeight(32)
         self.btn_start_svc.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_start_svc.setStyleSheet("background-color: #1e8a5e; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;")
         self.btn_start_svc.clicked.connect(lambda: self.manage_service("Start"))
-        
+
         self.btn_stop_svc = QPushButton("⏹ Parar")
         self.btn_stop_svc.setFixedHeight(32)
         self.btn_stop_svc.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_stop_svc.setStyleSheet("background-color: #d9534f; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;")
         self.btn_stop_svc.clicked.connect(lambda: self.manage_service("Stop"))
-        
+
         self.btn_restart_svc = QPushButton("↻ Reiniciar")
         self.btn_restart_svc.setFixedHeight(32)
         self.btn_restart_svc.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_restart_svc.setStyleSheet("background-color: #f0ad4e; color: black; font-weight: bold; padding: 0 15px; border-radius: 4px;")
         self.btn_restart_svc.clicked.connect(lambda: self.manage_service("Restart"))
-        
+
         svc_controls.addWidget(self.inp_search_svc, stretch=1)
         svc_controls.addWidget(self.btn_load_svc)
         svc_controls.addWidget(self.btn_start_svc)
         svc_controls.addWidget(self.btn_stop_svc)
         svc_controls.addWidget(self.btn_restart_svc)
         svc_layout.addLayout(svc_controls)
-        
+
         self.tbl_svc = QTableWidget(0, 3)
         self.tbl_svc.setHorizontalHeaderLabels(["Nome", "Display Name", "Status"])
         self.tbl_svc.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -421,7 +463,7 @@ class SystemManagerView(BaseView):
         layout.addWidget(self.tabs)
 
     def filter_table(self, table, text):
-        search_text = text.lower()
+        search_text = text.lower().strip()
         for row in range(table.rowCount()):
             match = False
             for col in range(table.columnCount()):
@@ -433,29 +475,30 @@ class SystemManagerView(BaseView):
 
     def _on_summary_double_click(self, row, col):
         item = self.tbl_summary.item(row, 0)
-        if not item: return
+        if not item:
+            return
         event_data = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(event_data, dict):
             EventDetailDialog(event_data, parent=self).exec()
 
     def _on_events_double_click(self, row, col):
         item = self.tbl_events.item(row, 0)
-        if not item: return
+        if not item:
+            return
         event_data = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(event_data, dict):
             EventDetailDialog(event_data, parent=self).exec()
 
     def _reset_buttons(self):
-        """Devolve os botões de ação ao estado normal após uma execução."""
         self.btn_load_proc.setEnabled(True)
         self.btn_load_proc.setText("↻ Listar Processos")
-        
+
         self.btn_load_svc.setEnabled(True)
         self.btn_load_svc.setText("↻ Listar Serviços")
-        
+
         self.btn_load_events.setEnabled(True)
         self.btn_load_events.setText("🔍 Buscar Eventos")
-        
+
         self.btn_refresh_summary.setEnabled(True)
         self.btn_refresh_summary.setText("↻ Atualizar Resumo")
 
@@ -466,9 +509,9 @@ class SystemManagerView(BaseView):
             self.inp_target.setFocus()
             return
 
-        # Feedback Visual: Desativa o botão correspondente para evitar spam de cliques
         if action_type == "get_events":
-            if not extra_params: extra_params = {}
+            if not extra_params:
+                extra_params = {}
             extra_params["log_name"] = self.cmb_ev_log.currentText()
             extra_params["level"] = self.cmb_ev_level.currentData()
             extra_params["max"] = self.cmb_ev_max.currentText()
@@ -489,22 +532,26 @@ class SystemManagerView(BaseView):
         self.worker.finished.connect(self.on_worker_finished)
         self.worker.error.connect(self._on_worker_error)
         self.worker.start()
-        
+
     def _on_worker_error(self, err):
         self._reset_buttons()
-        QMessageBox.critical(self, "Erro Remoto", str(err))
+        QMessageBox.critical(self, "Erro Remoto", fix_mojibake(str(err)))
 
     def kill_process(self):
         row = self.tbl_proc.currentRow()
         if row < 0:
             QMessageBox.warning(self, "Aviso", "Selecione um processo na tabela.")
             return
-            
+
         pid = self.tbl_proc.item(row, 0).text()
         name = self.tbl_proc.item(row, 1).text()
-        
-        reply = QMessageBox.question(self, 'Confirmar', f'Deseja forçar o encerramento do processo {name} (PID: {pid})?', QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        
+
+        reply = QMessageBox.question(
+            self, "Confirmar",
+            f"Deseja forçar o encerramento do processo {name} (PID: {pid})?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
         if reply == QMessageBox.StandardButton.Yes:
             self.run_worker("kill_process", {"pid": pid, "name": name})
 
@@ -513,20 +560,17 @@ class SystemManagerView(BaseView):
         if row < 0:
             QMessageBox.warning(self, "Aviso", "Selecione um serviço na tabela.")
             return
-            
+
         name = self.tbl_svc.item(row, 0).text()
         self.run_worker("manage_service", {"name": name, "action": action})
 
     def load_critical_summary(self):
         self.run_worker("get_critical_summary")
-        
+
     def _adjust_summary_height(self):
         rows = self.tbl_summary.rowCount()
         header_h = self.tbl_summary.horizontalHeader().height()
-        if rows > 0:
-            row_h = self.tbl_summary.rowHeight(0) or 30
-        else:
-            row_h = 30
+        row_h = (self.tbl_summary.rowHeight(0) or 30) if rows > 0 else 30
         visible_rows = max(rows, 1)
         total = header_h + (row_h * visible_rows) + 4
         self.tbl_summary.setFixedHeight(total)
@@ -542,26 +586,27 @@ class SystemManagerView(BaseView):
             return
 
         for e in data_list:
-            if not isinstance(e, dict): continue
+            if not isinstance(e, dict):
+                continue
             r = self.tbl_summary.rowCount()
             self.tbl_summary.insertRow(r)
 
-            item_data = QTableWidgetItem(str(e.get("Data", "")))
+            item_data = QTableWidgetItem(fix_mojibake(str(e.get("Data", ""))))
             item_data.setData(Qt.ItemDataRole.UserRole, e)
             self.tbl_summary.setItem(r, 0, item_data)
 
-            self.tbl_summary.setItem(r, 1, QTableWidgetItem(str(e.get("LogName", ""))))
+            self.tbl_summary.setItem(r, 1, QTableWidgetItem(fix_mojibake(str(e.get("LogName", "")))))
 
-            lvl_item = QTableWidgetItem(str(e.get("Nivel", "")))
+            lvl_item = QTableWidgetItem(fix_mojibake(str(e.get("Nivel", ""))))
             lvl_txt = lvl_item.text().lower()
-            if "critical" in lvl_txt or "crítico" in lvl_txt:
+            if "critical" in lvl_txt or "crítico" in lvl_txt or "critico" in lvl_txt:
                 lvl_item.setForeground(Qt.GlobalColor.red)
             elif "error" in lvl_txt or "erro" in lvl_txt:
                 lvl_item.setForeground(Qt.GlobalColor.darkYellow)
             self.tbl_summary.setItem(r, 2, lvl_item)
 
-            self.tbl_summary.setItem(r, 3, QTableWidgetItem(str(e.get("Fonte", ""))))
-            self.tbl_summary.setItem(r, 4, QTableWidgetItem(str(e.get("Mensagem", ""))))
+            self.tbl_summary.setItem(r, 3, QTableWidgetItem(fix_mojibake(str(e.get("Fonte", "")))))
+            self.tbl_summary.setItem(r, 4, QTableWidgetItem(fix_mojibake(str(e.get("Mensagem", "")))))
 
         self.tbl_summary.setSortingEnabled(True)
         self.lbl_summary_status.setText(f"{len(data_list)} evento(s) recente(s).")
@@ -573,129 +618,126 @@ class SystemManagerView(BaseView):
         if index == 2:
             if self.inp_target.text().strip() and self.tbl_summary.rowCount() == 0:
                 self.load_critical_summary()
-                
+
     def on_worker_finished(self, data_list, action_type):
         self._reset_buttons()
         executor = os.environ.get("USERNAME", "Desconhecido")
         target = self.inp_target.text().strip()
-        
+
         if action_type == "get_critical_summary":
             self.populate_critical_summary(data_list)
             return
-            
+
         if action_type in ["kill_process", "manage_service"]:
-            log_dict = data_list[0] if data_list else {}
-            status_final = log_dict.get("StatusFinal", "SUCESSO")
-            mensagem = log_dict.get("Mensagem", "Ação concluída.")
-            
+            log_dict = data_list[0] if (data_list and isinstance(data_list[0], dict)) else {}
+            status_final = str(log_dict.get("StatusFinal", "SUCESSO"))
+            mensagem = fix_mojibake(str(log_dict.get("Mensagem", "Ação concluída.")))
+
             script_name = "Encerrar Processo" if action_type == "kill_process" else "Gerenciar Serviço"
             modulo = "[Gerenciador] Processos" if action_type == "kill_process" else "[Gerenciador] Serviços"
 
             self.db.save_execution(
-                target_pc=target, 
-                script_name=script_name, 
-                status=status_final, 
-                result_data=json.dumps(log_dict, ensure_ascii=False) if log_dict else mensagem, 
-                technician=executor, 
+                target_pc=target,
+                script_name=script_name,
+                status=status_final,
+                result_data=json.dumps(log_dict, ensure_ascii=False) if log_dict else mensagem,
+                technician=executor,
                 module=modulo
             )
-            
-            if status_final == "SUCESSO":
+
+            if "SUCESSO" in status_final.upper():
                 QMessageBox.information(self, "Sucesso", mensagem)
             else:
                 QMessageBox.warning(self, "Aviso da Ação", mensagem)
-                
+
             if action_type == "kill_process":
                 self.run_worker("get_processes")
             else:
                 self.run_worker("get_services")
             return
 
-        if len(data_list) > 0 and "Erro" in data_list[0]:
-            QMessageBox.warning(self, "Aviso do Sistema Alvo", data_list[0]["Erro"])
+        if len(data_list) > 0 and isinstance(data_list[0], dict) and "Erro" in data_list[0]:
+            QMessageBox.warning(self, "Aviso do Sistema Alvo", fix_mojibake(str(data_list[0]["Erro"])))
             return
 
         if action_type == "get_processes":
             self.tbl_proc.setSortingEnabled(False)
             self.tbl_proc.setRowCount(0)
-            
+
             for p in data_list:
+                if not isinstance(p, dict):
+                    continue
                 r = self.tbl_proc.rowCount()
                 self.tbl_proc.insertRow(r)
-                
+
                 item_id = QTableWidgetItem()
-                item_id.setData(Qt.ItemDataRole.EditRole, int(p.get("Id", 0)))
+                item_id.setData(Qt.ItemDataRole.EditRole, safe_int(p.get("Id", 0)))
                 self.tbl_proc.setItem(r, 0, item_id)
-                
-                self.tbl_proc.setItem(r, 1, QTableWidgetItem(str(p.get("ProcessName", ""))))
-                
+
+                self.tbl_proc.setItem(r, 1, QTableWidgetItem(fix_mojibake(str(p.get("ProcessName", "")))))
+
                 item_mem = QTableWidgetItem()
-                item_mem.setData(Qt.ItemDataRole.EditRole, float(p.get("MemoryMB", 0)))
+                item_mem.setData(Qt.ItemDataRole.EditRole, safe_float(p.get("MemoryMB", 0.0)))
                 self.tbl_proc.setItem(r, 2, item_mem)
-                
+
                 item_cpu = QTableWidgetItem()
-                item_cpu.setData(Qt.ItemDataRole.EditRole, float(p.get("CPU", 0)))
+                item_cpu.setData(Qt.ItemDataRole.EditRole, safe_float(p.get("CPU", 0.0)))
                 self.tbl_proc.setItem(r, 3, item_cpu)
-                
+
             self.tbl_proc.setSortingEnabled(True)
             self.filter_table(self.tbl_proc, self.inp_search_proc.text())
-                
+
         elif action_type == "get_services":
             self.tbl_svc.setSortingEnabled(False)
             self.tbl_svc.setRowCount(0)
-            
+
             for s in data_list:
+                if not isinstance(s, dict):
+                    continue
                 r = self.tbl_svc.rowCount()
                 self.tbl_svc.insertRow(r)
-                
-                self.tbl_svc.setItem(r, 0, QTableWidgetItem(str(s.get("Name", ""))))
-                self.tbl_svc.setItem(r, 1, QTableWidgetItem(str(s.get("DisplayName", ""))))
-                
-                status_str = str(s.get("Status", ""))
-                status_item = QTableWidgetItem()
-                
-                if "Running" in status_str:
-                    status_item.setText("Em Execução")
-                    status_item.setForeground(Qt.GlobalColor.green)
-                elif "Stopped" in status_str:
-                    status_item.setText("Parado")
-                    status_item.setForeground(Qt.GlobalColor.red)
-                else:
-                    status_item.setText(status_str)
-                    
+
+                self.tbl_svc.setItem(r, 0, QTableWidgetItem(fix_mojibake(str(s.get("Name", "")))))
+                self.tbl_svc.setItem(r, 1, QTableWidgetItem(fix_mojibake(str(s.get("DisplayName", "")))))
+
+                status_text, status_color = normalize_service_status(s.get("Status", ""))
+                status_item = QTableWidgetItem(status_text)
+                if status_color is not None:
+                    status_item.setForeground(status_color)
+
                 self.tbl_svc.setItem(r, 2, status_item)
-                
+
             self.tbl_svc.setSortingEnabled(True)
             self.filter_table(self.tbl_svc, self.inp_search_svc.text())
-                
+
         elif action_type == "get_events":
             self.tbl_events.setSortingEnabled(False)
             self.tbl_events.setRowCount(0)
-            
+
             for e in data_list:
+                if not isinstance(e, dict):
+                    continue
                 r = self.tbl_events.rowCount()
                 self.tbl_events.insertRow(r)
-                
+
                 item_id = QTableWidgetItem()
-                try:
-                    item_id.setData(Qt.ItemDataRole.EditRole, int(e.get("ID", 0)))
-                except:
-                    item_id.setData(Qt.ItemDataRole.EditRole, str(e.get("ID", "")))
-                
+                item_id.setData(Qt.ItemDataRole.EditRole, safe_int(e.get("ID", 0)))
                 item_id.setData(Qt.ItemDataRole.UserRole, e)
                 self.tbl_events.setItem(r, 0, item_id)
-                self.tbl_events.setItem(r, 1, QTableWidgetItem(str(e.get("Data", ""))))
-                
-                lvl_item = QTableWidgetItem(str(e.get("Nivel", "")))
-                if "Error" in lvl_item.text() or "Critical" in lvl_item.text():
+
+                self.tbl_events.setItem(r, 1, QTableWidgetItem(fix_mojibake(str(e.get("Data", "")))))
+
+                lvl_item = QTableWidgetItem(fix_mojibake(str(e.get("Nivel", ""))))
+                lvl_low = lvl_item.text().lower()
+                if "error" in lvl_low or "erro" in lvl_low or "critical" in lvl_low or "crítico" in lvl_low:
                     lvl_item.setForeground(Qt.GlobalColor.red)
-                elif "Warning" in lvl_item.text():
+                elif "warning" in lvl_low or "aviso" in lvl_low:
                     lvl_item.setForeground(Qt.GlobalColor.darkYellow)
-                    
+
                 self.tbl_events.setItem(r, 2, lvl_item)
-                self.tbl_events.setItem(r, 3, QTableWidgetItem(str(e.get("Fonte", ""))))
-                self.tbl_events.setItem(r, 4, QTableWidgetItem(str(e.get("Mensagem", ""))))
-                
+                self.tbl_events.setItem(r, 3, QTableWidgetItem(fix_mojibake(str(e.get("Fonte", "")))))
+                self.tbl_events.setItem(r, 4, QTableWidgetItem(fix_mojibake(str(e.get("Mensagem", "")))))
+
             self.tbl_events.setSortingEnabled(True)
             self.filter_table(self.tbl_events, self.inp_search_ev.text())
 
