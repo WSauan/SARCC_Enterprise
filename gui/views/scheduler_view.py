@@ -1,4 +1,3 @@
-import os
 import base64
 from pathlib import Path
 from PyQt6.QtWidgets import (
@@ -9,18 +8,18 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QDate, QTime
 
 from core.task_queue import TaskQueueManager
-from core.database import DatabaseManager
 from core.ps_loader import load_ps_template, PsTemplateError
 from core.config import get_ps_scripts_dir, get_data_dir
+from infrastructure.repositories.script_repository import ScriptRepository
 from gui.views.base_view import BaseView, read_text_file_safe
 from gui.views.software_view import fix_mojibake
 
 
 class SchedulerView(BaseView):
-    def __init__(self, main_window_ref=None):
+    def __init__(self, main_window_ref=None, script_repo: ScriptRepository = None):
         super().__init__(main_window_ref)
         self.queue_manager = getattr(main_window_ref, "queue_manager", None) or TaskQueueManager(max_threads=5)
-        self.db = DatabaseManager()
+        self.script_repo = script_repo or ScriptRepository()
         self._setup_ui()
         self.load_local_scripts()
 
@@ -155,15 +154,15 @@ class SchedulerView(BaseView):
         self._toggle_trigger_options()
 
     def load_local_scripts(self):
-        """Carrega os scripts da Biblioteca SQLite e de pastas locais (.ps1)."""
+        """Carrega os scripts da Biblioteca SQLite (via ScriptRepository) e de pastas locais (.ps1)."""
         self.cmb_scripts.clear()
         found_names = set()
 
-        # 1. Scripts salvos na Biblioteca SQLite (Gestor de Scripts)
+        # 1. Scripts salvos na Biblioteca SQLite
         try:
-            db_scripts = self.db.get_all_scripts()
-            for s in db_scripts:
-                _, nome, _, _, conteudo = s
+            for s in self.script_repo.list_as_dicts():
+                nome = s.get("nome", "").strip()
+                conteudo = s.get("conteudo", "")
                 if nome and conteudo:
                     self.cmb_scripts.addItem(
                         nome,
@@ -240,7 +239,6 @@ class SchedulerView(BaseView):
                 return name, read_text_file_safe(path)
             return None, None
 
-        # Compatibilidade retroativa caso currentData seja uma string de caminho
         if isinstance(item_data, str) and Path(item_data).exists():
             return self.cmb_scripts.currentText(), read_text_file_safe(item_data)
 
