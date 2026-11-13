@@ -50,6 +50,23 @@ def normalize_service_status(raw_status) -> tuple[str, Qt.GlobalColor | None]:
     return (s if s else "Desconhecido"), None
 
 
+def normalize_printer_status(raw_status) -> tuple[str, Qt.GlobalColor | None]:
+    """Padroniza o status da impressora do Windows (Normal, Printing, Offline, Error)."""
+    s = fix_mojibake(str(raw_status or "")).strip()
+    low = s.lower()
+    if low in ("normal", "0", "3", "idle", "pronta"):
+        return "Pronta (Online)", Qt.GlobalColor.green
+    if "printing" in low or low == "4" or "imprimindo" in low:
+        return "Imprimindo", Qt.GlobalColor.green
+    if "offline" in low or low == "7":
+        return "Offline", Qt.GlobalColor.red
+    if "error" in low or "erro" in low or "jam" in low or "outofpaper" in low:
+        return f"Alerta ({s})", Qt.GlobalColor.red
+    if "paused" in low or "pausada" in low:
+        return "Pausada", Qt.GlobalColor.darkYellow
+    return (s if s else "Desconhecido"), None
+
+
 class EventDetailDialog(QDialog):
     """Dialog para exibir detalhes completos de um evento."""
 
@@ -150,7 +167,7 @@ class SysManagerWorker(QThread):
         self.extra_params = extra_params or {}
 
     def _b64(self, text):
-        return base64.b64encode(str(text).encode("utf-8")).decode("ascii")
+        return base64.b64encode(str(text or "").encode("utf-8")).decode("ascii")
 
     def _build_script(self) -> str:
         if self.action_type == "get_processes":
@@ -185,6 +202,16 @@ class SysManagerWorker(QThread):
                 log_name=self.extra_params.get("log_name", "System"),
                 level=self.extra_params.get("level", "1,2"),
                 max_events=self.extra_params.get("max", 50),
+            )
+
+        if self.action_type == "get_printers":
+            return load_ps_template("system_manager", "get_printers")
+
+        if self.action_type in ("flush_spooler", "clear_printer_queue", "remove_printer"):
+            return load_ps_template(
+                "system_manager", "manage_spooler",
+                action_b64=self._b64(self.action_type),
+                printer_b64=self._b64(self.extra_params.get("printer_name", "")),
             )
 
         raise PsTemplateError(f"action_type desconhecido: {self.action_type}")
@@ -233,7 +260,7 @@ class SystemManagerView(BaseView):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
-        title = QLabel("Gerenciador de Processos e Serviços do Sistema")
+        title = QLabel("Gerenciador de Processos, Serviços, Eventos e Impressoras")
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #4a90e2;")
         layout.addWidget(title)
 
@@ -285,6 +312,7 @@ class SystemManagerView(BaseView):
         self.tbl_proc.setHorizontalHeaderLabels(["PID", "Nome do Processo", "Memória (MB)", "CPU"])
         self.tbl_proc.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.tbl_proc.horizontalHeader().setStretchLastSection(True)
+        self.tbl_proc.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
         self.tbl_proc.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.tbl_proc.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         proc_layout.addWidget(self.tbl_proc)
@@ -336,6 +364,7 @@ class SystemManagerView(BaseView):
         self.tbl_svc.setHorizontalHeaderLabels(["Nome", "Display Name", "Status"])
         self.tbl_svc.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.tbl_svc.horizontalHeader().setStretchLastSection(True)
+        self.tbl_svc.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
         self.tbl_svc.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.tbl_svc.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         svc_layout.addWidget(self.tbl_svc)
@@ -458,6 +487,75 @@ class SystemManagerView(BaseView):
         ev_layout.addWidget(self.tbl_events)
 
         self.tabs.addTab(self.tab_events, "📋 Logs de Eventos")
+
+        # --- ABA 4: IMPRESSORAS & SPOOLER ---
+        self.tab_printers = QWidget()
+        prt_layout = QVBoxLayout(self.tab_printers)
+
+        prt_controls = QHBoxLayout()
+        self.inp_search_printers = QLineEdit()
+        self.inp_search_printers.setFixedHeight(32)
+        self.inp_search_printers.setPlaceholderText("🔍 Filtrar impressoras por nome, IP ou driver...")
+        self.inp_search_printers.setStyleSheet("padding: 0 10px;")
+        self.inp_search_printers.textChanged.connect(lambda text: self.filter_table(self.tbl_printers, text))
+
+        self.btn_load_printers = QPushButton("↻ Listar Impressoras")
+        self.btn_load_printers.setFixedHeight(32)
+        self.btn_load_printers.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_load_printers.setStyleSheet("padding: 0 15px; font-weight: bold; border-radius: 4px;")
+        self.btn_load_printers.clicked.connect(lambda: self.run_worker("get_printers"))
+
+        self.btn_flush_spooler = QPushButton("🧹 Destravar Spooler (Limpar Tudo)")
+        self.btn_flush_spooler.setFixedHeight(32)
+        self.btn_flush_spooler.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_flush_spooler.setToolTip(
+            "Para o serviço Spooler, apaga todos os arquivos .SHD/.SPL presos em C:\\Windows\\System32\\spool\\PRINTERS e reinicia o serviço."
+        )
+        self.btn_flush_spooler.setStyleSheet(
+            "background-color: #f0ad4e; color: black; font-weight: bold; padding: 0 15px; border-radius: 4px;"
+        )
+        self.btn_flush_spooler.clicked.connect(self.flush_spooler)
+
+        self.btn_clear_queue = QPushButton("🗑️ Limpar Fila Selecionada")
+        self.btn_clear_queue.setFixedHeight(32)
+        self.btn_clear_queue.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_queue.setStyleSheet(
+            "background-color: #2a7de1; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;"
+        )
+        self.btn_clear_queue.clicked.connect(self.clear_selected_printer_queue)
+
+        self.btn_remove_printer = QPushButton("❌ Remover Impressora")
+        self.btn_remove_printer.setFixedHeight(32)
+        self.btn_remove_printer.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_remove_printer.setStyleSheet(
+            "background-color: #d9534f; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;"
+        )
+        self.btn_remove_printer.clicked.connect(self.remove_selected_printer)
+
+        prt_controls.addWidget(self.inp_search_printers, stretch=1)
+        prt_controls.addWidget(self.btn_load_printers)
+        prt_controls.addWidget(self.btn_flush_spooler)
+        prt_controls.addWidget(self.btn_clear_queue)
+        prt_controls.addWidget(self.btn_remove_printer)
+        prt_layout.addLayout(prt_controls)
+
+        self.tbl_printers = QTableWidget(0, 5)
+        self.tbl_printers.setHorizontalHeaderLabels([
+            "Nome da Impressora", "Porta / IP", "Driver", "Fila (Jobs)", "Status"
+        ])
+        self.tbl_printers.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.tbl_printers.horizontalHeader().resizeSection(0, 240)
+        self.tbl_printers.horizontalHeader().resizeSection(1, 180)
+        self.tbl_printers.horizontalHeader().resizeSection(2, 220)
+        self.tbl_printers.horizontalHeader().resizeSection(3, 95)
+        self.tbl_printers.horizontalHeader().setStretchLastSection(True)
+        self.tbl_printers.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
+        self.tbl_printers.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.tbl_printers.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        prt_layout.addWidget(self.tbl_printers)
+
+        self.tabs.addTab(self.tab_printers, "🖨️ Impressoras & Spooler")
+
         self.tabs.currentChanged.connect(self.on_tab_changed)
         layout.addWidget(self.tabs)
 
@@ -501,6 +599,12 @@ class SystemManagerView(BaseView):
         self.btn_refresh_summary.setEnabled(True)
         self.btn_refresh_summary.setText("↻ Atualizar Resumo")
 
+        self.btn_load_printers.setEnabled(True)
+        self.btn_load_printers.setText("↻ Listar Impressoras")
+
+        self.btn_flush_spooler.setEnabled(True)
+        self.btn_flush_spooler.setText("🧹 Destravar Spooler (Limpar Tudo)")
+
     def run_worker(self, action_type, extra_params=None):
         target = self.inp_target.text().strip()
         if not target:
@@ -526,6 +630,12 @@ class SystemManagerView(BaseView):
             self.btn_refresh_summary.setEnabled(False)
             self.btn_refresh_summary.setText("Carregando...")
             self.lbl_summary_status.setText("Consultando eventos recentes...")
+        elif action_type == "get_printers":
+            self.btn_load_printers.setEnabled(False)
+            self.btn_load_printers.setText("Listando...")
+        elif action_type == "flush_spooler":
+            self.btn_flush_spooler.setEnabled(False)
+            self.btn_flush_spooler.setText("⏳ Destravando...")
 
         self.worker = SysManagerWorker(target, action_type, extra_params)
         self.worker.finished.connect(self.on_worker_finished)
@@ -562,6 +672,47 @@ class SystemManagerView(BaseView):
 
         name = self.tbl_svc.item(row, 0).text()
         self.run_worker("manage_service", {"name": name, "action": action})
+
+    def flush_spooler(self):
+        target = self.inp_target.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
+            return
+
+        reply = QMessageBox.question(
+            self, "Destravar Spooler de Impressão",
+            f"Deseja limpar profundamente o Spooler em {target}?\n\n"
+            "• O serviço 'Spooler' será parado.\n"
+            "• Todos os arquivos .SHD/.SPL presos em C:\\Windows\\System32\\spool\\PRINTERS serão excluídos.\n"
+            "• O serviço será reiniciado automaticamente.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.run_worker("flush_spooler")
+
+    def clear_selected_printer_queue(self):
+        row = self.tbl_printers.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Aviso", "Selecione uma impressora na tabela.")
+            return
+
+        printer_name = self.tbl_printers.item(row, 0).text()
+        self.run_worker("clear_printer_queue", {"printer_name": printer_name})
+
+    def remove_selected_printer(self):
+        row = self.tbl_printers.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Aviso", "Selecione uma impressora na tabela para remover.")
+            return
+
+        printer_name = self.tbl_printers.item(row, 0).text()
+        reply = QMessageBox.question(
+            self, "Confirmar Remoção",
+            f"Tem certeza que deseja remover a impressora '{printer_name}' do computador alvo?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.run_worker("remove_printer", {"printer_name": printer_name})
 
     def load_critical_summary(self):
         self.run_worker("get_critical_summary")
@@ -627,13 +778,19 @@ class SystemManagerView(BaseView):
             self.populate_critical_summary(data_list)
             return
 
-        if action_type in ["kill_process", "manage_service"]:
+        if action_type in ("kill_process", "manage_service", "flush_spooler", "clear_printer_queue", "remove_printer"):
             log_dict = data_list[0] if (data_list and isinstance(data_list[0], dict)) else {}
             status_final = str(log_dict.get("StatusFinal", "SUCESSO"))
             mensagem = fix_mojibake(str(log_dict.get("Mensagem", "Ação concluída.")))
 
-            script_name = "Encerrar Processo" if action_type == "kill_process" else "Gerenciar Serviço"
-            modulo = "[Gerenciador] Processos" if action_type == "kill_process" else "[Gerenciador] Serviços"
+            action_meta = {
+                "kill_process":        ("Encerrar Processo",      "[Gerenciador] Processos",   "get_processes"),
+                "manage_service":      ("Gerenciar Serviço",      "[Gerenciador] Serviços",    "get_services"),
+                "flush_spooler":       ("Destravar Spooler",      "[Gerenciador] Impressoras", "get_printers"),
+                "clear_printer_queue": ("Limpar Fila Impressão",  "[Gerenciador] Impressoras", "get_printers"),
+                "remove_printer":      ("Remover Impressora",     "[Gerenciador] Impressoras", "get_printers"),
+            }
+            script_name, modulo, refresh_action = action_meta[action_type]
 
             self.exec_repo.record_execution(
                 target_pc=target,
@@ -649,10 +806,7 @@ class SystemManagerView(BaseView):
             else:
                 QMessageBox.warning(self, "Aviso da Ação", mensagem)
 
-            if action_type == "kill_process":
-                self.run_worker("get_processes")
-            else:
-                self.run_worker("get_services")
+            self.run_worker(refresh_action)
             return
 
         if len(data_list) > 0 and isinstance(data_list[0], dict) and "Erro" in data_list[0]:
@@ -739,6 +893,36 @@ class SystemManagerView(BaseView):
 
             self.tbl_events.setSortingEnabled(True)
             self.filter_table(self.tbl_events, self.inp_search_ev.text())
+
+        elif action_type == "get_printers":
+            self.tbl_printers.setSortingEnabled(False)
+            self.tbl_printers.setRowCount(0)
+
+            for prt in data_list:
+                if not isinstance(prt, dict):
+                    continue
+                r = self.tbl_printers.rowCount()
+                self.tbl_printers.insertRow(r)
+
+                self.tbl_printers.setItem(r, 0, QTableWidgetItem(fix_mojibake(str(prt.get("Name", "")))))
+                self.tbl_printers.setItem(r, 1, QTableWidgetItem(fix_mojibake(str(prt.get("PortName", "")))))
+                self.tbl_printers.setItem(r, 2, QTableWidgetItem(fix_mojibake(str(prt.get("DriverName", "")))))
+
+                jobs = safe_int(prt.get("JobCount", 0))
+                item_jobs = QTableWidgetItem()
+                item_jobs.setData(Qt.ItemDataRole.EditRole, jobs)
+                if jobs > 0:
+                    item_jobs.setForeground(Qt.GlobalColor.yellow)
+                self.tbl_printers.setItem(r, 3, item_jobs)
+
+                status_text, status_color = normalize_printer_status(prt.get("Status", ""))
+                status_item = QTableWidgetItem(status_text)
+                if status_color is not None:
+                    status_item.setForeground(status_color)
+                self.tbl_printers.setItem(r, 4, status_item)
+
+            self.tbl_printers.setSortingEnabled(True)
+            self.filter_table(self.tbl_printers, self.inp_search_printers.text())
 
     def showEvent(self, event):
         super().showEvent(event)
