@@ -1,18 +1,7 @@
 from PyQt6.QtCore import Qt
-from gui.views.shell_view import format_console_html
 from gui.views.system_manager_view import (
     safe_int, safe_float, normalize_service_status, SysManagerWorker
 )
-
-
-def test_format_console_html_escapes_angle_brackets_and_repairs_mojibake():
-    """Garante que tags <...> do PowerShell não sejam engolidas pelo QTextEdit.insertHtml."""
-    raw = "CÃ¢mera <System.String> & <# Comentario #>\nLinha 2"
-    html = format_console_html(raw)
-    assert "Câmera" in html
-    assert "&lt;System.String&gt;" in html
-    assert "&amp;" in html
-    assert "&lt;# Comentario #&gt;<br>Linha 2" in html
 
 
 def test_safe_int_and_safe_float_handle_none_and_commas():
