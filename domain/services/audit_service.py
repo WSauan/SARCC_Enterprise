@@ -1,9 +1,47 @@
+import json
 import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from infrastructure.repositories.execution_repository import ExecutionRepository
-from gui.views.history_view import extract_json_from_result, HistoryView
 from gui.views.software_view import fix_mojibake
+
+
+def format_duration(seconds: float) -> str:
+    """Formata uma duração em segundos para leitura humana (ex: 12.3s, 2m 5s, 1h 1m 5s)."""
+    if seconds < 0:
+        return "-"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        return f"{int(seconds // 60)}m {seconds % 60:.0f}s"
+    else:
+        return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m {((seconds % 3600) % 60):.0f}s"
+
+
+def extract_json_from_result(raw_text: str) -> dict | None:
+    """Extrai o dicionário JSON de um log de execução mesmo quando há linhas de texto/avisos antes do JSON."""
+    if not raw_text:
+        return None
+    clean_res = re.sub(r"\[\s*⏱.*?Tempo de Execução.*?\]", "", str(raw_text)).strip()
+    if not clean_res:
+        return None
+    try:
+        parsed = json.loads(clean_res)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    for line in reversed(clean_res.splitlines()):
+        line_str = line.strip()
+        if line_str.startswith("{") and line_str.endswith("}"):
+            try:
+                parsed = json.loads(line_str)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                continue
+    return None
 
 
 class AuditService:
@@ -28,7 +66,7 @@ class AuditService:
             )
             if tempo_match:
                 raw_seconds = float(tempo_match.group(1))
-                duracao_str = HistoryView._format_duration(raw_seconds)
+                duracao_str = format_duration(raw_seconds)
 
             parsed_json = extract_json_from_result(result_data)
             if parsed_json:
@@ -42,7 +80,7 @@ class AuditService:
                         t_in = datetime.strptime(str(parsed_json["Inicio"]), fmt)
                         t_out = datetime.strptime(str(parsed_json["Fim"]), fmt)
                         raw_seconds = (t_out - t_in).total_seconds()
-                        duracao_str = HistoryView._format_duration(raw_seconds)
+                        duracao_str = format_duration(raw_seconds)
                     except Exception:
                         pass
 

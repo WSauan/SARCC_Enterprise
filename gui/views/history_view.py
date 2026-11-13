@@ -1,5 +1,4 @@
 import json
-import re
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -10,35 +9,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QDate
 
-from core.database import DatabaseManager
+from infrastructure.repositories.execution_repository import ExecutionRepository
+from domain.services.audit_service import AuditService, extract_json_from_result, format_duration
 from gui.views.base_view import sanitize_filename
 from gui.views.software_view import fix_mojibake
-
-
-def extract_json_from_result(raw_text: str) -> dict | None:
-    """Extrai o dicionário JSON de um log de execução mesmo quando há linhas de texto/avisos antes do JSON."""
-    if not raw_text:
-        return None
-    clean_res = re.sub(r"\[\s*⏱.*?Tempo de Execução.*?\]", "", str(raw_text)).strip()
-    if not clean_res:
-        return None
-    try:
-        parsed = json.loads(clean_res)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
-
-    for line in reversed(clean_res.splitlines()):
-        line_str = line.strip()
-        if line_str.startswith("{") and line_str.endswith("}"):
-            try:
-                parsed = json.loads(line_str)
-                if isinstance(parsed, dict):
-                    return parsed
-            except Exception:
-                continue
-    return None
 
 
 class LogTreeWidgetItem(QTreeWidgetItem):
@@ -108,7 +82,8 @@ class HistoryView(QWidget):
     def __init__(self, main_window_ref=None):
         super().__init__()
         self.main_window = main_window_ref
-        self.db = DatabaseManager()
+        self.repo = ExecutionRepository()
+        self.audit_service = AuditService(self.repo)
         self.view_mode = "ativos"
         self.sort_col = 3
         self.sort_order = Qt.SortOrder.DescendingOrder
@@ -246,14 +221,7 @@ class HistoryView(QWidget):
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
-        if seconds < 0:
-            return "-"
-        if seconds < 60:
-            return f"{seconds:.1f}s"
-        elif seconds < 3600:
-            return f"{int(seconds // 60)}m {seconds % 60:.0f}s"
-        else:
-            return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m {((seconds % 3600) % 60):.0f}s"
+        return format_duration(seconds)
 
     def on_header_clicked(self, logical_index):
         if logical_index in [1, 10]:
@@ -344,20 +312,16 @@ class HistoryView(QWidget):
             QMessageBox.warning(self, "Aviso", "Marque o checkbox de pelo menos um log visível.")
             return
 
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            if self.view_mode == "ativos":
-                cursor.executemany("UPDATE executions SET excluido = 1 WHERE id = ?", [(i,) for i in ids])
-                conn.commit()
-            else:
-                reply = QMessageBox.question(
-                    self, "Excluir Definitivamente",
-                    f"Deseja excluir permanentemente os {len(ids)} logs selecionados?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.Yes:
-                    cursor.executemany("DELETE FROM executions WHERE id = ?", [(i,) for i in ids])
-                    conn.commit()
+        if self.view_mode == "ativos":
+            self.repo.soft_delete_many(ids)
+        else:
+            reply = QMessageBox.question(
+                self, "Excluir Definitivamente",
+                f"Deseja excluir permanentemente os {len(ids)} logs selecionados?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.repo.hard_delete_many(ids)
 
         self.chk_select_all.setChecked(False)
         self.load_logs()
@@ -366,10 +330,7 @@ class HistoryView(QWidget):
         ids = self.get_selected_ids()
         if not ids:
             return
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.executemany("UPDATE executions SET excluido = 0 WHERE id = ?", [(i,) for i in ids])
-            conn.commit()
+        self.repo.restore_many(ids)
         self.chk_select_all.setChecked(False)
         self.load_logs()
 
@@ -380,26 +341,14 @@ class HistoryView(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
-            with self.db.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM executions WHERE excluido = 1")
-                conn.commit()
+            self.repo.empty_trash()
             self.load_logs()
 
     def load_logs(self):
         self.tree.setSortingEnabled(False)
         self.tree.clear()
-        is_excluido = 1 if self.view_mode == "lixeira" else 0
 
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT id, start_time, target_pc, script_name, status, result_data, technician, module 
-                FROM executions 
-                WHERE excluido = ?
-                ORDER BY start_time DESC LIMIT 1000
-            ''', (is_excluido,))
-            rows = cursor.fetchall()
+        rows = self.repo.list_executions(deleted=(self.view_mode == "lixeira"), limit=1000)
 
         for row in rows:
             log_id, start_time, target_pc, script_name, status, result_data = row[:6]
@@ -407,32 +356,11 @@ class HistoryView(QWidget):
             technician = row[6] if len(row) > 6 and row[6] else "N/A"
             module = row[7] if len(row) > 7 and row[7] else "Geral"
 
-            inicio_str = str(start_time)[:19]
-            fim_str = "-"
-            duracao_str = "-"
-            raw_seconds = -1.0
-
-            if result_data:
-                tempo_match = re.search(r"\[\s*⏱.*?Tempo de Execução.*?: ([\d\.]+) segundos\]", str(result_data))
-                if tempo_match:
-                    raw_seconds = float(tempo_match.group(1))
-                    duracao_str = self._format_duration(raw_seconds)
-
-                js = extract_json_from_result(result_data)
-                if js:
-                    if "Inicio" in js:
-                        inicio_str = str(js["Inicio"])
-                    if "Fim" in js:
-                        fim_str = str(js["Fim"])
-                    if "Inicio" in js and "Fim" in js:
-                        try:
-                            fmt = "%Y-%m-%d %H:%M:%S"
-                            t_in = datetime.strptime(str(js["Inicio"]), fmt)
-                            t_out = datetime.strptime(str(js["Fim"]), fmt)
-                            raw_seconds = (t_out - t_in).total_seconds()
-                            duracao_str = self._format_duration(raw_seconds)
-                        except Exception:
-                            pass
+            metrics = self.audit_service.parse_execution_metrics(start_time, result_data)
+            inicio_str = metrics["inicio"]
+            fim_str = metrics["fim"]
+            duracao_str = metrics["duracao"]
+            raw_seconds = metrics["seconds"]
 
             child_item = LogTreeWidgetItem(self.tree, [
                 f"🖥️ {pc}", "", str(log_id), inicio_str, fim_str, duracao_str,
@@ -475,89 +403,16 @@ class HistoryView(QWidget):
             QMessageBox.warning(self, "Aviso", "Marque o checkbox de pelo menos uma linha para exportar.")
             return
 
-        agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        conteudo_final = (
-            "================================================================================\n"
-            "                 SARCC - RELATÓRIO OFICIAL DE AUDITORIA E EXECUÇÃO\n"
-            "================================================================================\n"
-            f"Data de Geração do Relatório : {agora}\n"
-            f"Total de Registros Exportados: {len(ids)}\n"
-            "================================================================================\n\n"
-        )
-
-        pc = "ENDPOINT"
-        inicio_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        script = "Relatorio"
-
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            for idx, log_id in enumerate(ids, 1):
-                cursor.execute(
-                    "SELECT start_time, target_pc, script_name, status, result_data, technician, module FROM executions WHERE id = ?",
-                    (log_id,)
-                )
-                row_data = cursor.fetchone()
-                if not row_data:
-                    continue
-
-                data_bruta, pc, script, status, res_data, tech, mod = row_data
-                detalhes = ""
-
-                inicio_str = str(data_bruta)[:19]
-                fim_str = "N/A"
-                duracao_str = "N/A"
-
-                if res_data:
-                    tempo_match = re.search(r"\[\s*⏱.*?Tempo de Execução.*?: ([\d\.]+) segundos\]", str(res_data))
-                    if tempo_match:
-                        duracao_str = self._format_duration(float(tempo_match.group(1)))
-
-                    js = extract_json_from_result(res_data)
-                    if js:
-                        if "Inicio" in js:
-                            inicio_str = str(js["Inicio"])
-                        if "Fim" in js:
-                            fim_str = str(js["Fim"])
-                        if "Inicio" in js and "Fim" in js:
-                            try:
-                                fmt = "%Y-%m-%d %H:%M:%S"
-                                t_in = datetime.strptime(str(js["Inicio"]), fmt)
-                                t_out = datetime.strptime(str(js["Fim"]), fmt)
-                                duracao_str = self._format_duration((t_out - t_in).total_seconds())
-                            except Exception:
-                                pass
-
-                        msg = js.get("Mensagem", "")
-                        if msg:
-                            detalhes += f">> MENSAGEM DO SISTEMA:\n{fix_mojibake(str(msg))}\n\n"
-                        if "Detalhes" in js:
-                            detalhes += ">> DETALHES TÉCNICOS:\n"
-                            if isinstance(js["Detalhes"], list):
-                                for linha in js["Detalhes"]:
-                                    detalhes += f"  {fix_mojibake(str(linha))}\n"
-                            else:
-                                detalhes += f"  {fix_mojibake(str(js['Detalhes']))}\n"
-                    else:
-                        detalhes = f">> RAW OUTPUT:\n{fix_mojibake(str(res_data))}"
-
-                conteudo = (
-                    f"[ REGISTRO #{idx} - ID BD: {log_id} ] ".ljust(80, "-") + "\n"
-                    f"COMPUTADOR ALVO  : {pc}\n"
-                    f"TÉCNICO EXECUTOR : {tech}\n"
-                    f"MÓDULO DE ORIGEM : {mod}\n"
-                    f"SCRIPT / AÇÃO    : {script}\n"
-                    f"STATUS FINAL     : {status}\n"
-                    f"INÍCIO DA AÇÃO   : {inicio_str}\n"
-                    f"TÉRMINO DA AÇÃO  : {fim_str}\n"
-                    f"TEMPO DE EXECUÇÃO: {duracao_str}\n\n"
-                    f"{detalhes}\n"
-                    f"{''.ljust(80, '-')}\n\n"
-                )
-                conteudo_final += conteudo
+        conteudo_final = self.audit_service.generate_audit_report(ids)
 
         if len(ids) == 1:
-            raw_name = f"{pc}_{inicio_str}_{script}".replace(" ", "_")
-            default_filename = f"{sanitize_filename(raw_name)}.txt"
+            row = self.repo.get_by_id(ids[0])
+            if row:
+                data_bruta, pc, script = row[0], row[1], row[2]
+                raw_name = f"{pc}_{str(data_bruta)[:19]}_{script}".replace(" ", "_")
+                default_filename = f"{sanitize_filename(raw_name)}.txt"
+            else:
+                default_filename = "Relatorio_SARCC.txt"
         else:
             agora_safe = datetime.now().strftime("%Y%m%d_%H%M")
             default_filename = f"Lote_{len(ids)}_Registros_{agora_safe}.txt"

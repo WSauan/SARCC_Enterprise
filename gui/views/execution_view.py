@@ -1,6 +1,5 @@
 import os
 import re
-import json
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -14,7 +13,8 @@ from PyQt6.QtGui import QFont, QTextCursor
 from gui.dialogs.dialogs import CredentialDialog
 from core.credential_store import CredentialStore
 from core.task_queue import TaskQueueManager
-from core.database import DatabaseManager
+from infrastructure.repositories.script_repository import ScriptRepository
+from domain.services.script_service import ScriptService
 from gui.views.base_view import BaseView, read_text_file_safe
 from gui.views.software_view import fix_mojibake
 
@@ -74,7 +74,8 @@ class ExecutionView(BaseView):
     def __init__(self, main_window_ref=None):
         super().__init__(main_window_ref)
         self.queue_manager = getattr(main_window_ref, "queue_manager", None) or TaskQueueManager(max_threads=10)
-        self.db = DatabaseManager()
+        self.script_repo = ScriptRepository()
+        self.script_service = ScriptService(self.script_repo)
         self._setup_ui()
 
     def _setup_ui(self):
@@ -352,7 +353,7 @@ class ExecutionView(BaseView):
         self.list_scripts.blockSignals(True)
         self.list_scripts.clear()
 
-        scripts = self.db.get_all_scripts()
+        scripts = self.script_repo.list_all()
         if not scripts:
             item = QListWidgetItem("⚠️ Nenhum script na biblioteca.")
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
@@ -420,12 +421,7 @@ class ExecutionView(BaseView):
             return
 
         credentials = None
-        needs_creds = any(
-            any(ph in (s.get("conteudo") or "") for ph in ("[[ADMIN_PASS]]", "[[VNC_PASS]]", "[[ADMIN_USER]]"))
-            for s in scripts_selecionados
-        )
-
-        if needs_creds:
+        if self.script_service.any_requires_credentials(scripts_selecionados):
             credentials = self._get_credentials()
             if credentials is None:
                 return

@@ -1,4 +1,3 @@
-import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
@@ -8,8 +7,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QRegularExpression
 from PyQt6.QtGui import QFont, QSyntaxHighlighter, QTextCharFormat, QColor
 from gui.widgets.code_editor import CodeEditorWidget
-from gui.views.base_view import BaseView, read_text_file_safe, sanitize_filename
-from core.database import DatabaseManager
+from gui.views.base_view import BaseView, sanitize_filename
+from infrastructure.repositories.script_repository import ScriptRepository
+from domain.services.script_service import ScriptService
 from core.logger import get_logger
 
 log = get_logger(__name__)
@@ -20,7 +20,6 @@ class PowerShellHighlighter(QSyntaxHighlighter):
         super().__init__(document)
         self.highlightingRules = []
 
-        # Palavras-chave do PowerShell (Rosa/Roxo)
         keyword_format = QTextCharFormat()
         keyword_format.setForeground(QColor("#ff79c6"))
         keyword_format.setFontWeight(QFont.Weight.Bold)
@@ -35,26 +34,22 @@ class PowerShellHighlighter(QSyntaxHighlighter):
             pattern = QRegularExpression(word, QRegularExpression.PatternOption.CaseInsensitiveOption)
             self.highlightingRules.append((pattern, keyword_format))
 
-        # Variáveis do PowerShell (Azul Claro)
         variable_format = QTextCharFormat()
         variable_format.setForeground(QColor("#8be9fd"))
         pattern = QRegularExpression("\\$[a-zA-Z0-9_:]+")
         self.highlightingRules.append((pattern, variable_format))
 
-        # Strings (Amarelo)
         string_format = QTextCharFormat()
         string_format.setForeground(QColor("#f1fa8c"))
         pattern = QRegularExpression("\".*\"|'.*'")
         pattern.setPatternOptions(QRegularExpression.PatternOption.InvertedGreedinessOption)
         self.highlightingRules.append((pattern, string_format))
 
-        # Comentários de linha única (Verde)
         comment_format = QTextCharFormat()
         comment_format.setForeground(QColor("#50fa7b"))
         pattern = QRegularExpression("#[^\n]*")
         self.highlightingRules.append((pattern, comment_format))
 
-        # Comentários de múltiplas linhas <# #>
         self.multi_line_comment_format = QTextCharFormat()
         self.multi_line_comment_format.setForeground(QColor("#50fa7b"))
         self.comment_start_expression = QRegularExpression("<#")
@@ -87,7 +82,8 @@ class PowerShellHighlighter(QSyntaxHighlighter):
 class ScriptsView(BaseView):
     def __init__(self, main_window_ref=None):
         super().__init__(main_window_ref)
-        self.db = DatabaseManager()
+        self.repo = ScriptRepository()
+        self.service = ScriptService(self.repo)
         self.current_script_id = None
         self._setup_ui()
         self.load_scripts_list()
@@ -215,7 +211,7 @@ class ScriptsView(BaseView):
 
     def load_scripts_list(self):
         self.tree_scripts.clear()
-        scripts = self.db.get_all_scripts()
+        scripts = self.repo.list_all()
 
         categorias_dict = {}
         for s in scripts:
@@ -301,26 +297,12 @@ class ScriptsView(BaseView):
         if not arquivos:
             return
 
-        existentes = {s[1].lower(): s for s in self.db.get_all_scripts()}
-        importados = 0
-        atualizados = 0
-
-        for file_path in arquivos:
-            try:
-                conteudo = read_text_file_safe(file_path).strip()
-                if not conteudo:
-                    continue
-                nome_arquivo = os.path.splitext(os.path.basename(file_path))[0].strip()
-
-                if nome_arquivo.lower() in existentes:
-                    existing_id, existing_name, existing_desc, existing_cat, _ = existentes[nome_arquivo.lower()]
-                    self.db.update_script(existing_id, existing_name, existing_desc or "Atualizado via Importação", existing_cat or "Outros", conteudo)
-                    atualizados += 1
-                else:
-                    self.db.save_script(nome_arquivo, "Importado via Lote", "Outros", conteudo)
-                    importados += 1
-            except Exception as e:
-                log.error(f"Falha ao importar script '{file_path}': {e}", exc_info=True)
+        try:
+            importados, atualizados = self.service.import_files(arquivos)
+        except Exception as e:
+            log.error(f"Falha ao importar scripts em lote: {e}", exc_info=True)
+            QMessageBox.critical(self, "Erro na Importação", f"Ocorreu um erro durante a importação:\n{e}")
+            return
 
         if importados > 0 or atualizados > 0:
             log.info(f"Importação concluída: {importados} novos, {atualizados} atualizados.")
@@ -333,29 +315,19 @@ class ScriptsView(BaseView):
 
     def export_script(self):
         selected_items = self.tree_scripts.selectedItems()
-        script_items = [item for item in selected_items if item.data(0, Qt.ItemDataRole.UserRole)]
+        script_items = [item.data(0, Qt.ItemDataRole.UserRole) for item in selected_items if item.data(0, Qt.ItemDataRole.UserRole)]
 
         if len(script_items) > 1:
             pasta_destino = QFileDialog.getExistingDirectory(self, "Selecione a Pasta de Destino para os Scripts")
             if not pasta_destino:
                 return
 
-            sucesso = 0
-            for item in script_items:
-                data = item.data(0, Qt.ItemDataRole.UserRole)
-                nome = data["nome"]
-                conteudo = data["conteudo"] or ""
-                nome_safe = sanitize_filename(nome, default="Script_SARCC").replace(" ", "_")
-                caminho_final = os.path.join(pasta_destino, f"{nome_safe}.ps1")
-
-                try:
-                    with open(caminho_final, "w", encoding="utf-8") as f:
-                        f.write(conteudo)
-                    sucesso += 1
-                except Exception as e:
-                    log.error(f"Falha ao exportar script '{nome}': {e}", exc_info=True)
-
-            QMessageBox.information(self, "Exportação em Lote", f"{sucesso} arquivo(s) gerados na pasta selecionada!")
+            try:
+                sucesso = self.service.export_to_directory(script_items, pasta_destino)
+                QMessageBox.information(self, "Exportação em Lote", f"{sucesso} arquivo(s) gerados na pasta selecionada!")
+            except Exception as e:
+                log.error(f"Falha na exportação em lote: {e}", exc_info=True)
+                QMessageBox.critical(self, "Erro na Exportação", f"Falha ao exportar scripts:\n{e}")
         else:
             conteudo = self.txt_codigo.toPlainText().strip()
             if not conteudo:
@@ -392,11 +364,11 @@ class ScriptsView(BaseView):
 
         try:
             if self.current_script_id is None:
-                self.db.save_script(nome, descricao, categoria, conteudo)
+                self.repo.create(nome, descricao, categoria, conteudo)
                 log.info(f"Novo script criado: '{nome}' (categoria: {categoria})")
                 QMessageBox.information(self, "Sucesso", "Novo script criado com sucesso!")
             else:
-                self.db.update_script(self.current_script_id, nome, descricao, categoria, conteudo)
+                self.repo.update(self.current_script_id, nome, descricao, categoria, conteudo)
                 log.info(f"Script atualizado: '{nome}' (id={self.current_script_id})")
                 QMessageBox.information(self, "Sucesso", "Script atualizado com sucesso!")
         except Exception as e:
@@ -428,7 +400,7 @@ class ScriptsView(BaseView):
         if reply == QMessageBox.StandardButton.Yes:
             try:
                 script_id = self.current_script_id
-                self.db.delete_script(script_id)
+                self.repo.delete(script_id)
                 log.info(f"Script excluído: id={script_id}")
                 QMessageBox.information(self, "Excluído", "Script removido do banco de dados.")
                 self.prepare_new_script()
