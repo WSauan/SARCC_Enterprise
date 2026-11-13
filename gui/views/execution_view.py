@@ -87,7 +87,7 @@ class ExecutionView(BaseView):
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #4a90e2;")
         main_layout.addWidget(title)
 
-        target_group = QGroupBox("1. Computadores Alvo")
+        target_group = QGroupBox("Computadores Alvo")
         target_layout = QHBoxLayout(target_group)
         target_layout.setContentsMargins(15, 20, 15, 15)
 
@@ -117,7 +117,7 @@ class ExecutionView(BaseView):
         target_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         main_layout.addWidget(target_group)
 
-        script_group = QGroupBox("2. Execução de Scripts (Biblioteca)")
+        script_group = QGroupBox("Execução de Scripts (Biblioteca)")
         script_vlayout = QVBoxLayout(script_group)
         script_vlayout.setContentsMargins(15, 20, 15, 15)
         script_vlayout.setSpacing(10)

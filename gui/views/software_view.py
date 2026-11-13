@@ -470,7 +470,7 @@ class SoftwareView(BaseView):
         title.setStyleSheet("font-size: 24px; font-weight: bold;")
         layout.addWidget(title)
 
-        target_group = QGroupBox("1. Controle de Endpoint e Motor de Gestão")
+        target_group = QGroupBox("Controle de Endpoint e Motor de Gestão")
         target_layout = QHBoxLayout(target_group)
         target_layout.setContentsMargins(15, 20, 15, 15)
 

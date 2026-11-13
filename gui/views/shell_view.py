@@ -95,7 +95,7 @@ class ShellView(BaseView):
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #4a90e2;")
         layout.addWidget(title)
 
-        conn_group = QGroupBox("1. Estabelecer Sessão")
+        conn_group = QGroupBox("Estabelecer Sessão")
         conn_layout = QHBoxLayout()
         conn_layout.setContentsMargins(15, 20, 15, 15)
 
@@ -111,7 +111,7 @@ class ShellView(BaseView):
         conn_group.setLayout(conn_layout)
         layout.addWidget(conn_group)
 
-        shortcut_group = QGroupBox("2. ⚡ Atalhos de Diagnóstico de Rede")
+        shortcut_group = QGroupBox("⚡ Atalhos de Diagnóstico de Rede")
         shortcut_layout = QHBoxLayout(shortcut_group)
         shortcut_layout.setContentsMargins(15, 20, 15, 15)
         shortcut_layout.setSpacing(10)
@@ -137,7 +137,7 @@ class ShellView(BaseView):
 
         layout.addWidget(shortcut_group)
 
-        console_group = QGroupBox("3. Console de Saída")
+        console_group = QGroupBox("Console de Saída")
         console_layout = QVBoxLayout(console_group)
         console_layout.setContentsMargins(15, 20, 15, 15)
 

@@ -32,7 +32,7 @@ class SchedulerView(BaseView):
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #4a90e2;")
         main_layout.addWidget(title)
 
-        group_schedule = QGroupBox("1. Novo Agendamento Automático")
+        group_schedule = QGroupBox("Novo Agendamento Automático")
         layout_schedule = QVBoxLayout(group_schedule)
         layout_schedule.setContentsMargins(15, 20, 15, 15)
 
@@ -115,7 +115,7 @@ class SchedulerView(BaseView):
         layout_schedule.addLayout(row2)
         main_layout.addWidget(group_schedule)
 
-        group_manage = QGroupBox("2. Gestão de Tarefas Remotas Ativas")
+        group_manage = QGroupBox("Gestão de Tarefas Remotas Ativas")
         layout_manage = QVBoxLayout(group_manage)
         layout_manage.setContentsMargins(15, 20, 15, 15)
 
