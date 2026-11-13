@@ -12,6 +12,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
+from gui.dialogs.dialogs import CredentialDialog
+from core.credential_store import CredentialStore
 from core.remote_connection import RemoteConnectionManager
 from core.task_queue import TaskQueueManager
 from core.ps_loader import load_ps_template, PsTemplateError
@@ -60,6 +62,22 @@ def _sort_profiles(profiles: list, logged_names: set) -> list:
         return (is_logged, is_normal, last_use)
 
     return sorted(profiles, key=sort_key, reverse=True)
+
+
+def format_smart_badge(disk_type: str, smart_status: str) -> str:
+    """Formata o tipo de disco e o status S.M.A.R.T. com destaque colorido em HTML."""
+    dtype = str(disk_type or "Disco").strip()
+    smart = str(smart_status or "N/A").strip()
+    low = smart.lower()
+    if "saudável" in low or "saudavel" in low or "ok" in low:
+        color = "#4CAF50"
+    elif "alerta" in low or "warning" in low:
+        color = "#f0ad4e"
+    elif "crítico" in low or "critico" in low or "unhealthy" in low:
+        color = "#f44336"
+    else:
+        color = "#888888"
+    return f"[{dtype}] S.M.A.R.T.: <span style='color: {color}; font-weight: bold;'>{smart}</span>"
 
 
 class ProfilesDialog(QDialog):
@@ -232,6 +250,42 @@ class DashboardView(BaseView):
         self._last_anydesk_id = ""
         self._setup_ui()
 
+    def _get_credentials(self):
+        """Retorna credenciais — cache → disco (DPAPI) → popup."""
+        cached = getattr(self.main_window, "get_cached_credentials", None)
+        if cached:
+            creds = cached()
+            if creds:
+                return creds
+
+        saved = CredentialStore.load()
+        if saved:
+            setter = getattr(self.main_window, "set_cached_credentials", None)
+            if setter:
+                setter(saved["user"], saved["pass"])
+            return saved
+
+        dominio = os.environ.get("USERDOMAIN", "")
+        usuario = os.environ.get("USERNAME", "")
+        user_str = f"{dominio}\\{usuario}" if dominio else usuario
+
+        dlg = CredentialDialog(user_display=user_str, has_saved=False, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+
+        senha = dlg.password
+        if not senha:
+            return None
+
+        if dlg.remember:
+            CredentialStore.save(user_str, senha)
+
+        setter = getattr(self.main_window, "set_cached_credentials", None)
+        if setter:
+            setter(user_str, senha)
+
+        return {"user": user_str, "pass": senha, "vnc_pass": senha}
+
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(20, 20, 20, 20)
@@ -266,10 +320,10 @@ class DashboardView(BaseView):
         target_layout.addWidget(self.lbl_last_sync)
         main_layout.addWidget(target_group)
 
-        action_group = QGroupBox("⚡ Ações Rápidas & Acesso Remoto")
+        action_group = QGroupBox("⚡ Ações Rápidas, Acesso Remoto & Reparo de Agentes")
         action_layout = QHBoxLayout(action_group)
         action_layout.setContentsMargins(15, 20, 15, 15)
-        action_layout.setSpacing(10)
+        action_layout.setSpacing(8)
 
         self.cmb_remote = QComboBox()
         self.cmb_remote.setFixedHeight(32)
@@ -279,37 +333,56 @@ class DashboardView(BaseView):
         self.btn_connect = QPushButton("▶ Conectar")
         self.btn_connect.setFixedHeight(32)
         self.btn_connect.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_connect.setStyleSheet("background-color: #0275d8; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;")
+        self.btn_connect.setStyleSheet("background-color: #0275d8; color: white; font-weight: bold; padding: 0 12px; border-radius: 4px;")
         self.btn_connect.clicked.connect(self.action_connect)
 
-        self.btn_wol = QPushButton("📡 Wake-on-LAN")
+        self.cmb_agent_repair = QComboBox()
+        self.cmb_agent_repair.setFixedHeight(32)
+        self.cmb_agent_repair.addItem("🛠️ Agente: Zabbix Agent 2", "zabbix")
+        self.cmb_agent_repair.addItem("🛠️ Agente: UltraVNC Server", "uvnc")
+        self.cmb_agent_repair.addItem("🛠️ Agente: GLPI (+ Forçar Sync)", "glpi")
+        self.cmb_agent_repair.addItem("🛠️ Agente: Desktop Info", "desktopinfo")
+        self.cmb_agent_repair.addItem("🛠️ Reparar Todos (Zabbix+VNC+GLPI+Info)", "all")
+        self.cmb_agent_repair.setStyleSheet("padding: 0 10px; font-weight: bold;")
+
+        self.btn_repair_agent = QPushButton("🔧 Reparar/Instalar")
+        self.btn_repair_agent.setFixedHeight(32)
+        self.btn_repair_agent.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_repair_agent.setStyleSheet("background-color: #1e8a5e; color: white; font-weight: bold; padding: 0 12px; border-radius: 4px;")
+        self.btn_repair_agent.clicked.connect(self.action_repair_agent)
+
+        self.btn_wol = QPushButton("📡 WoL")
         self.btn_wol.setFixedHeight(32)
+        self.btn_wol.setToolTip("Enviar pacote mágico Wake-on-LAN")
         self.btn_wol.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_wol.setStyleSheet("background-color: #5cb85c; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;")
+        self.btn_wol.setStyleSheet("background-color: #5cb85c; color: white; font-weight: bold; padding: 0 12px; border-radius: 4px;")
         self.btn_wol.clicked.connect(self.action_wol)
 
-        self.btn_logoff = QPushButton("👤 Forçar Logoff")
+        self.btn_logoff = QPushButton("👤 Logoff")
         self.btn_logoff.setFixedHeight(32)
         self.btn_logoff.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_logoff.setStyleSheet("background-color: #f0ad4e; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;")
+        self.btn_logoff.setStyleSheet("background-color: #f0ad4e; color: white; font-weight: bold; padding: 0 12px; border-radius: 4px;")
         self.btn_logoff.clicked.connect(lambda: self.action_power("logoff"))
 
         self.btn_restart = QPushButton("🔄 Reiniciar")
         self.btn_restart.setFixedHeight(32)
         self.btn_restart.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_restart.setStyleSheet("background-color: #d9534f; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;")
+        self.btn_restart.setStyleSheet("background-color: #d9534f; color: white; font-weight: bold; padding: 0 12px; border-radius: 4px;")
         self.btn_restart.clicked.connect(lambda: self.action_power("restart"))
 
         self.btn_shutdown = QPushButton("🔌 Desligar")
         self.btn_shutdown.setFixedHeight(32)
         self.btn_shutdown.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_shutdown.setStyleSheet("background-color: #292b2c; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;")
+        self.btn_shutdown.setStyleSheet("background-color: #292b2c; color: white; font-weight: bold; padding: 0 12px; border-radius: 4px;")
         self.btn_shutdown.clicked.connect(lambda: self.action_power("shutdown"))
 
         action_layout.addWidget(self.cmb_remote)
         action_layout.addWidget(self.btn_connect)
-        action_layout.addWidget(self.btn_wol)
+        action_layout.addSpacing(6)
+        action_layout.addWidget(self.cmb_agent_repair)
+        action_layout.addWidget(self.btn_repair_agent)
         action_layout.addStretch()
+        action_layout.addWidget(self.btn_wol)
         action_layout.addWidget(self.btn_logoff)
         action_layout.addWidget(self.btn_restart)
         action_layout.addWidget(self.btn_shutdown)
@@ -330,7 +403,7 @@ class DashboardView(BaseView):
         grid_cards.setColumnStretch(0, 1)
         grid_cards.setColumnStretch(1, 1)
 
-        self.card_sys = QGroupBox("🌐 Informações do Sistema")
+        self.card_sys = QGroupBox("🌐 Informações do Sistema & Inventário Físico")
         sys_layout = QVBoxLayout(self.card_sys)
         sys_layout.setContentsMargins(15, 20, 15, 15)
 
@@ -338,10 +411,13 @@ class DashboardView(BaseView):
         sys_grid.setSpacing(8)
 
         self.lbl_hostname = QLabel("Hostname: -")
+        self.lbl_desc = QLabel("Descrição (Local): -")
+        self.lbl_hw_model = QLabel("Equipamento: -")
+        self.lbl_serial = QLabel("Serial / BIOS: -")
         self.lbl_os = QLabel("SO: -")
         self.lbl_uptime = QLabel("Uptime: -")
-        self.lbl_ip = QLabel("IP (Ethernet/Wi-Fi): -")
-        self.lbl_mac = QLabel("MAC Address: -")
+        self.lbl_ip = QLabel("IP: -")
+        self.lbl_mac = QLabel("MAC: -")
         self.lbl_av = QLabel("Antivírus: -")
 
         self.lbl_rdp = QLabel("RDP: -")
@@ -354,19 +430,23 @@ class DashboardView(BaseView):
         self.lbl_winget = QLabel("Winget: -")
         self.lbl_reboot = QLabel("Reboot: -")
 
-        for lbl in [self.lbl_hostname, self.lbl_os, self.lbl_uptime, self.lbl_ip, self.lbl_mac,
-                    self.lbl_av, self.lbl_rdp, self.lbl_vnc, self.lbl_anydesk, self.lbl_wol,
-                    self.lbl_zabbix, self.lbl_glpi, self.lbl_desktopinfo, self.lbl_winget, self.lbl_reboot]:
+        for lbl in [
+            self.lbl_hostname, self.lbl_desc, self.lbl_hw_model, self.lbl_serial,
+            self.lbl_os, self.lbl_uptime, self.lbl_ip, self.lbl_mac,
+            self.lbl_av, self.lbl_rdp, self.lbl_vnc, self.lbl_anydesk, self.lbl_wol,
+            self.lbl_zabbix, self.lbl_glpi, self.lbl_desktopinfo, self.lbl_winget, self.lbl_reboot
+        ]:
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         sys_grid.addWidget(self.lbl_hostname, 0, 0)
-        sys_grid.addWidget(self.lbl_os, 1, 0)
-        sys_grid.addWidget(self.lbl_uptime, 2, 0)
-        sys_grid.addWidget(self.lbl_ip, 3, 0)
-        sys_grid.addWidget(self.lbl_mac, 4, 0)
-        sys_grid.addWidget(self.lbl_av, 5, 0)
-        sys_grid.addWidget(self.lbl_winget, 6, 0)
-        sys_grid.addWidget(self.lbl_reboot, 7, 0)
+        sys_grid.addWidget(self.lbl_desc, 1, 0)
+        sys_grid.addWidget(self.lbl_hw_model, 2, 0)
+        sys_grid.addWidget(self.lbl_serial, 3, 0)
+        sys_grid.addWidget(self.lbl_os, 4, 0)
+        sys_grid.addWidget(self.lbl_uptime, 5, 0)
+        sys_grid.addWidget(self.lbl_ip, 6, 0)
+        sys_grid.addWidget(self.lbl_mac, 7, 0)
+        sys_grid.addWidget(self.lbl_av, 8, 0)
 
         sys_grid.addWidget(self.lbl_rdp, 0, 1)
         sys_grid.addWidget(self.lbl_vnc, 1, 1)
@@ -375,6 +455,8 @@ class DashboardView(BaseView):
         sys_grid.addWidget(self.lbl_zabbix, 4, 1)
         sys_grid.addWidget(self.lbl_glpi, 5, 1)
         sys_grid.addWidget(self.lbl_desktopinfo, 6, 1)
+        sys_grid.addWidget(self.lbl_winget, 7, 1)
+        sys_grid.addWidget(self.lbl_reboot, 8, 1)
 
         sys_layout.addLayout(sys_grid)
         grid_cards.addWidget(self.card_sys, 0, 0)
@@ -437,11 +519,17 @@ class DashboardView(BaseView):
         bottom_panels = QHBoxLayout()
         bottom_panels.setSpacing(15)
 
-        self.card_resources = QGroupBox("⚙️ Recursos do Sistema (Disco, CPU, RAM)")
+        self.card_resources = QGroupBox("⚙️ Recursos Físicos (Disco S.M.A.R.T., CPU, Topologia RAM)")
         res_layout = QVBoxLayout(self.card_resources)
         res_layout.setContentsMargins(15, 20, 15, 15)
 
+        disk_header = QHBoxLayout()
         self.lbl_storage_info = QLabel("Disco C:: Aguardando leitura...")
+        self.lbl_disk_smart = QLabel("S.M.A.R.T.: -")
+        disk_header.addWidget(self.lbl_storage_info)
+        disk_header.addStretch()
+        disk_header.addWidget(self.lbl_disk_smart)
+
         self.prog_storage = QProgressBar()
         self.prog_storage.setValue(0)
         self.prog_storage.setStyleSheet(self._get_bar_style(0))
@@ -456,12 +544,19 @@ class DashboardView(BaseView):
         self.prog_temp.setValue(0)
         self.prog_temp.setStyleSheet(self._get_bar_style(0, is_temp=True))
 
+        ram_header = QHBoxLayout()
         self.lbl_ram_info = QLabel("RAM: Aguardando leitura...")
+        self.lbl_ram_slots = QLabel("Slots: -")
+        self.lbl_ram_slots.setStyleSheet("color: #5bc0de; font-weight: bold;")
+        ram_header.addWidget(self.lbl_ram_info)
+        ram_header.addStretch()
+        ram_header.addWidget(self.lbl_ram_slots)
+
         self.prog_ram = QProgressBar()
         self.prog_ram.setValue(0)
         self.prog_ram.setStyleSheet(self._get_bar_style(0))
 
-        res_layout.addWidget(self.lbl_storage_info)
+        res_layout.addLayout(disk_header)
         res_layout.addWidget(self.prog_storage)
         res_layout.addSpacing(10)
 
@@ -483,7 +578,7 @@ class DashboardView(BaseView):
         res_layout.addLayout(cpu_horiz)
 
         res_layout.addSpacing(10)
-        res_layout.addWidget(self.lbl_ram_info)
+        res_layout.addLayout(ram_header)
         res_layout.addWidget(self.prog_ram)
 
         bottom_panels.addWidget(self.card_resources, stretch=65)
@@ -529,19 +624,82 @@ class DashboardView(BaseView):
         if disabled:
             color = "#666666"
         elif is_temp:
-            if val >= 85: color = "#d9534f"
-            elif val >= 70: color = "#f0ad4e"
-            else: color = "#1e8a5e"
+            if val >= 85:
+                color = "#d9534f"
+            elif val >= 70:
+                color = "#f0ad4e"
+            else:
+                color = "#1e8a5e"
         else:
-            if val >= 90: color = "#d9534f"
-            elif val >= 75: color = "#f0ad4e"
-            else: color = "#1e8a5e"
+            if val >= 90:
+                color = "#d9534f"
+            elif val >= 75:
+                color = "#f0ad4e"
+            else:
+                color = "#1e8a5e"
 
         return f"QProgressBar {{ border: 1px solid #444; color: white; font-weight: bold; border-radius: 4px; text-align: center; height: 16px; }} QProgressBar::chunk {{ background-color: {color}; }}"
 
     def showEvent(self, event):
         super().showEvent(event)
         self.inp_target.setFocus()
+
+    def action_repair_agent(self):
+        """Dispara o reparo ou instalação automatizada do(s) agente(s) selecionado(s)."""
+        target = self.inp_target.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Aviso", "Informe o computador alvo antes de reparar um agente.")
+            self.inp_target.setFocus()
+            return
+
+        agent_key = self.cmb_agent_repair.currentData()
+        agent_label = self.cmb_agent_repair.currentText().replace("🛠️ ", "")
+
+        reply = QMessageBox.question(
+            self,
+            "Confirmar Reparo / Deploy de Agente",
+            f"Deseja executar o reparo/instalação de '{agent_label}' no computador {target}?\n\n"
+            "• Se o serviço estiver parado, será reconfigurado e iniciado.\n"
+            "• Se não estiver instalado, o SARCC fará o deploy silencioso a partir de \\\\hul-vp-imagem-cc\\netshared.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        credentials = self._get_credentials()
+        if credentials is None:
+            return
+
+        try:
+            ps_script = load_ps_template("dashboard", "repair_agent", agent_target=agent_key)
+        except PsTemplateError as e:
+            QMessageBox.critical(self, "Erro Interno", f"Template de reparo não encontrado:\n{e}")
+            return
+
+        self.btn_repair_agent.setEnabled(False)
+        self.btn_repair_agent.setText("⏳ Reparando...")
+
+        self.queue_manager.add_task(
+            target_pc=target,
+            script_name=f"Reparo ({agent_label})",
+            script_content=ps_script,
+            module_name="[Dashboard] Agentes",
+            credentials=credentials,
+            on_finish=lambda t, s, d: self._on_repair_finished(t, s, d),
+            on_error=lambda t, e: self._on_repair_error(t, e)
+        )
+
+    def _on_repair_finished(self, target_pc, status, json_data):
+        self.btn_repair_agent.setEnabled(True)
+        self.btn_repair_agent.setText("🔧 Reparar/Instalar")
+        msg = json_data.get("Mensagem", "Operação concluída com sucesso.") if isinstance(json_data, dict) else "Concluído."
+        QMessageBox.information(self, "Agente Reparado", f"[{target_pc}] {msg}")
+        self.fetch_telemetry()
+
+    def _on_repair_error(self, target_pc, error_msg):
+        self.btn_repair_agent.setEnabled(True)
+        self.btn_repair_agent.setText("🔧 Reparar/Instalar")
+        QMessageBox.critical(self, "Falha no Reparo", f"Não foi possível reparar o agente em {target_pc}:\n\n{error_msg}")
 
     def _install_missing_client_tool(self, tool_name: str, winget_id: str, net_keyword: str) -> bool:
         """Oferece auto-instalação local (via Rede SMB ou Winget) caso falte a ferramenta na máquina do técnico."""
@@ -652,12 +810,12 @@ class DashboardView(BaseView):
             )
 
     def on_wol_success(self, target):
-        self.btn_wol.setText("📡 Wake-on-LAN")
+        self.btn_wol.setText("📡 WoL")
         self.btn_wol.setEnabled(True)
         QMessageBox.information(self, "Máquina Online!", f"O computador {target} já está ligado e respondendo a PING na rede!\n\nVocê já pode iniciar o Acesso Remoto.")
 
     def on_wol_timeout(self, target):
-        self.btn_wol.setText("📡 Wake-on-LAN")
+        self.btn_wol.setText("📡 WoL")
         self.btn_wol.setEnabled(True)
         QMessageBox.warning(self, "Tempo Esgotado", f"O pacote mágico foi enviado, mas o computador {target} não respondeu a ping após 5 minutos.\n\nVerifique se ele possui cabo de energia conectado ou se o WoL está habilitado na BIOS.")
 
@@ -702,7 +860,7 @@ class DashboardView(BaseView):
             )
 
             if alvo_text and (alvo_text.count(".") == 3 or not alvo_text.count(":")):
-                self.btn_wol.setText("⏳ Aguardando...")
+                self.btn_wol.setText("⏳...")
                 self.btn_wol.setEnabled(False)
                 self.ping_worker = PingTrackerWorker(alvo_text)
                 self.ping_worker.success.connect(self.on_wol_success)
@@ -798,7 +956,7 @@ class DashboardView(BaseView):
         self.btn_fetch.setStyleSheet("background-color: #2a7de1; color: white; padding: 0 15px; font-weight: bold; border-radius: 4px;")
 
     def update_telemetry_ui(self, data):
-        if getattr(self.worker, 'is_cancelled', False):
+        if hasattr(self, "worker") and getattr(self.worker, 'is_cancelled', False):
             return
 
         self._reset_fetch_button()
@@ -808,10 +966,14 @@ class DashboardView(BaseView):
         pct = data.get("DiskPct", 0)
         free = data.get("DiskFree", 0)
         total = data.get("DiskTotal", 0)
+        disk_type = data.get("DiskType", "Disco Local")
+        disk_smart = data.get("DiskSmart", "N/A")
+
         self.prog_storage.setValue(int(pct))
         self.prog_storage.setStyleSheet(self._get_bar_style(pct))
         self.prog_storage.setFormat("%p%")
         self.lbl_storage_info.setText(f"Disco C:: Usado {pct}% ({free} GB livres de {total} GB)")
+        self.lbl_disk_smart.setText(format_smart_badge(disk_type, disk_smart))
 
         cpuModel = data.get("CPUModel", "N/A")
         cpuUsage = data.get("CPUUsage", 0)
@@ -839,10 +1001,12 @@ class DashboardView(BaseView):
         totalRam = data.get("TotalRAM", 0)
         usedRam = data.get("UsedRAM", 0)
         ramPct = data.get("RAMPct", 0)
+        ramSlots = data.get("RAMSlots", "N/A")
         self.prog_ram.setValue(int(ramPct))
         self.prog_ram.setStyleSheet(self._get_bar_style(ramPct))
         self.prog_ram.setFormat("%p%")
         self.lbl_ram_info.setText(f"RAM: Usando {usedRam} GB de {totalRam} GB")
+        self.lbl_ram_slots.setText(f"Topologia: {ramSlots}")
 
         profiles_list = data.get("ProfilesList", [])
         if not isinstance(profiles_list, list):
@@ -866,7 +1030,11 @@ class DashboardView(BaseView):
         self.lbl_logged_count.setText(str(len(logged_names)))
         self._populate_profiles_table(profiles_list, logged_names)
 
-        self.lbl_hostname.setText(f"Hostname: {data.get('HostName', 'N/A')}")
+        self.lbl_hostname.setText(f"Hostname: <b>{data.get('HostName', 'N/A')}</b>")
+        desc = data.get("ComputerDesc", "Sem descrição")
+        self.lbl_desc.setText(f"Descrição (Local): <span style='color: #5bc0de; font-weight: bold;'>{desc}</span>")
+        self.lbl_hw_model.setText(f"Equipamento: <b>{data.get('HardwareModel', 'N/A')}</b>")
+        self.lbl_serial.setText(f"Serial / BIOS: <b>{data.get('SerialNumber', 'N/A')}</b>")
         self.lbl_os.setText(f"SO: {data.get('OSVersion', 'N/A')}")
         self.lbl_uptime.setText(f"Uptime: {data.get('Uptime', 'N/A')}")
         self.lbl_ip.setText(f"IP: {data.get('IP', 'N/A')}")
@@ -953,7 +1121,7 @@ class DashboardView(BaseView):
             )
 
     def show_telemetry_error(self, err):
-        if getattr(self.worker, 'is_cancelled', False):
+        if hasattr(self, "worker") and getattr(self.worker, 'is_cancelled', False):
             return
 
         self._reset_fetch_button()

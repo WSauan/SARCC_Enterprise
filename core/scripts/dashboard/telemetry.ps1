@@ -1,17 +1,53 @@
 <#
 .SYNOPSIS
-    Telemetria Ultra-Rápida para o Dashboard com detecção híbrida (WMI + C:\Users) de perfis e pastas TEMP*.
+    Telemetria Ultra-Rápida para o Dashboard com Inventário Físico, S.M.A.R.T., Slots de RAM e Perfis TEMP*.
 #>
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $ErrorActionPreference = 'SilentlyContinue'
 
-# 1. Armazenamento
+# 1. Armazenamento e Saúde S.M.A.R.T.
 $drive = Get-PSDrive C -ErrorAction SilentlyContinue
 $free = if ($drive) { [math]::Round($drive.Free / 1GB, 2) } else { 0 }
 $used = if ($drive) { [math]::Round($drive.Used / 1GB, 2) } else { 0 }
 $total = [math]::Round($free + $used, 2)
 $pct = if ($total -gt 0) { [math]::Round(($used / $total) * 100, 1) } else { 0 }
+
+$diskTypeStr = "Desconhecido"
+$diskSmartStr = "N/A"
+try {
+    $physDisk = Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.DeviceId -eq '0' -or $_.MediaType -ne 'Unspecified' } | Select-Object -First 1
+    if (-not $physDisk) {
+        $physDisk = Get-PhysicalDisk -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if ($physDisk) {
+        $media = [string]$physDisk.MediaType
+        $bus   = [string]$physDisk.BusType
+        if ($bus -match 'NVMe') { $diskTypeStr = "NVMe SSD" }
+        elseif ($media -match 'SSD') { $diskTypeStr = "SSD" }
+        elseif ($media -match 'HDD') { $diskTypeStr = "HDD" }
+        else { $diskTypeStr = if ($bus) { $bus } else { "Disco Local" } }
+
+        $health = [string]$physDisk.HealthStatus
+        $opStatus = [string]$physDisk.OperationalStatus
+        if ($health -eq 'Healthy' -and ($opStatus -match 'OK')) {
+            $diskSmartStr = "Saudável (OK)"
+        } elseif ($health -eq 'Warning' -or $opStatus -match 'Predictive|Degraded') {
+            $diskSmartStr = "Alerta ($health)"
+        } else {
+            $diskSmartStr = "Crítico ($health)"
+        }
+    }
+} catch { }
+
+if ($diskSmartStr -eq "N/A") {
+    $wmiDisk = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($wmiDisk) {
+        if ($wmiDisk.Model -match 'NVMe') { $diskTypeStr = "NVMe SSD" }
+        elseif ($wmiDisk.Model -match 'SSD') { $diskTypeStr = "SSD" }
+        $diskSmartStr = if ($wmiDisk.Status -eq 'OK') { "Saudável (OK)" } else { "Alerta ($($wmiDisk.Status))" }
+    }
+}
 
 # 2. Perfis e Sessões (Híbrido: Win32_UserProfile + Pastas Físicas em C:\Users)
 $profilesList = @()
@@ -71,7 +107,6 @@ foreach ($p in $profilesRaw) {
     }
 }
 
-# Varre pastas físicas reais em C:\Users (ignorando Junctions/Symlinks como 'Todos os Usuários' e 'Usuário Padrão')
 $usersRoot = "$env:SystemDrive\Users"
 if (Test-Path -LiteralPath $usersRoot) {
     $diskFolders = @(Get-ChildItem -LiteralPath $usersRoot -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
@@ -104,19 +139,30 @@ $normalProfilesCount = @($profilesList | Where-Object { $_.IsTemp -eq $false }).
 $profiles = $profilesList.Count
 $loggedUsers = $loggedNames.Count
 
-# 3. OS e Rede
-$os = Get-CimInstance Win32_OperatingSystem -Property Caption, LastBootUpTime, TotalVisibleMemorySize, FreePhysicalMemory -ErrorAction SilentlyContinue
+# 3. OS, Descrição (Local/Setor) e Rede
+$os = Get-CimInstance Win32_OperatingSystem -Property Caption, Description, LastBootUpTime, TotalVisibleMemorySize, FreePhysicalMemory -ErrorAction SilentlyContinue
 $uptimeStr = "N/A"
 if ($os -and $os.LastBootUpTime) {
     $up = (Get-Date) - $os.LastBootUpTime
     $uptimeStr = "$($up.Days)d $($up.Hours)h $($up.Minutes)m"
 }
+$compDesc = if ($os -and -not [string]::IsNullOrWhiteSpace($os.Description)) { $os.Description.Trim() } else { "Sem descrição" }
 
 $net = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled = 'True'" -Property IPAddress, MACAddress -ErrorAction SilentlyContinue | Select-Object -First 1
 $ip = if ($net -and $net.IPAddress) { $net.IPAddress[0] } else { "N/A" }
 $mac = if ($net -and $net.MACAddress) { $net.MACAddress } else { "N/A" }
 
-# 4. Hardware
+# 4. Hardware Físico (Modelo, BIOS Serial, CPU e Topologia RAM)
+$cs = Get-CimInstance Win32_ComputerSystem -Property Manufacturer, Model -ErrorAction SilentlyContinue
+$bios = Get-CimInstance Win32_BIOS -Property SerialNumber -ErrorAction SilentlyContinue
+$hwModel = "N/A"
+if ($cs) {
+    $manuf = ($cs.Manufacturer -replace 'Inc\.|Corporation|Ltd\.|Co\.', '').Trim()
+    $mod = ($cs.Model).Trim()
+    $hwModel = "$manuf $mod".Trim()
+}
+$serialNum = if ($bios -and -not [string]::IsNullOrWhiteSpace($bios.SerialNumber)) { $bios.SerialNumber.Trim() } else { "N/A" }
+
 $cpu = Get-CimInstance Win32_Processor -Property Name, LoadPercentage -ErrorAction SilentlyContinue | Select-Object -First 1
 $cpuModel = if ($cpu) { $cpu.Name -replace "\s*\(R\)|\s*\(TM\)|CPU\s+|@\s*\d+\.\d+GHz", "" } else { "Desconhecido" }
 
@@ -131,6 +177,21 @@ $totalRamGB = if ($os) { [math]::Round($os.TotalVisibleMemorySize / 1MB, 1) } el
 $freeRamGB = if ($os) { [math]::Round($os.FreePhysicalMemory / 1MB, 1) } else { 0 }
 $usedRamGB = [math]::Round($totalRamGB - $freeRamGB, 1)
 $ramPct = if ($totalRamGB -gt 0) { [math]::Round(($usedRamGB / $totalRamGB) * 100, 1) } else { 0 }
+
+$ramSlotsStr = "N/A"
+try {
+    $memModules = @(Get-CimInstance Win32_PhysicalMemory -Property Speed, ConfiguredClockSpeed -ErrorAction SilentlyContinue)
+    $memArray = Get-CimInstance Win32_PhysicalMemoryArray -Property MemoryDevices -ErrorAction SilentlyContinue | Select-Object -First 1
+    $usedSlots = $memModules.Count
+    $totalSlots = if ($memArray -and $memArray.MemoryDevices) { $memArray.MemoryDevices } else { $usedSlots }
+    $speed = if ($memModules.Count -gt 0) {
+        if ($memModules[0].ConfiguredClockSpeed) { $memModules[0].ConfiguredClockSpeed } else { $memModules[0].Speed }
+    } else { $null }
+
+    if ($usedSlots -gt 0) {
+        $ramSlotsStr = if ($speed) { "$usedSlots/$totalSlots slots ($speed MHz)" } else { "$usedSlots/$totalSlots slots" }
+    }
+} catch { }
 
 # 5. Segurança
 $av = "Windows Defender (Nativo)"
@@ -213,6 +274,9 @@ $rebootStatus = if ($rebootPending) { "Pendente (" + ($rebootReasons -join ", ")
 # Resultado
 [PSCustomObject]@{
     HostName            = $env:COMPUTERNAME
+    ComputerDesc        = $compDesc
+    HardwareModel       = $hwModel
+    SerialNumber        = $serialNum
     OSVersion           = if ($os) { $os.Caption } else { "N/A" }
     Activation          = $actStatus
     CPUModel            = $cpuModel
@@ -221,11 +285,14 @@ $rebootStatus = if ($rebootPending) { "Pendente (" + ($rebootReasons -join ", ")
     TotalRAM            = $totalRamGB
     UsedRAM             = $usedRamGB
     RAMPct              = $ramPct
+    RAMSlots            = $ramSlotsStr
     AVProduct           = $av
     DiskTotal           = $total
     DiskFree            = $free
     DiskUsed            = $used
     DiskPct             = $pct
+    DiskType            = $diskTypeStr
+    DiskSmart           = $diskSmartStr
     ProfilesCount       = $profiles
     NormalProfilesCount = $normalProfilesCount
     TempProfilesCount   = $tempProfilesCount
