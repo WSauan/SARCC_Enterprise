@@ -1,7 +1,19 @@
 import os
+import socket
 import pytest
 from unittest.mock import MagicMock
-from core.remote_connection import RemoteConnectionManager
+from core.remote_connection import RemoteConnectionManager, resolve_target_hostname
+
+
+def test_resolve_target_hostname_prefers_name_and_falls_back_to_ip(mocker):
+    """Resolve IP para hostname quando possível e retorna o IP original caso falhe."""
+    assert resolve_target_hostname("hul-wk-01") == "HUL-WK-01"
+
+    mocker.patch("core.remote_connection.socket.gethostbyaddr", return_value=("hul-wk-244377e.domain.local", [], ["10.8.128.14"]))
+    assert resolve_target_hostname("10.8.128.14") == "HUL-WK-244377E"
+
+    mocker.patch("core.remote_connection.socket.gethostbyaddr", side_effect=socket.herror("Unknown host"))
+    assert resolve_target_hostname("10.8.128.99") == "10.8.128.99"
 
 
 def test_smart_decode_preserves_utf8_accents():

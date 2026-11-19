@@ -1,5 +1,6 @@
 from typing import List, Optional, Tuple
 from core.database import DatabaseManager
+from core.remote_connection import resolve_target_hostname
 
 
 class ExecutionRepository:
@@ -17,8 +18,9 @@ class ExecutionRepository:
         technician: str = "N/A",
         module: str = "Automático",
     ) -> None:
+        normalized_target = resolve_target_hostname(target_pc) or str(target_pc or "").strip()
         self.db.save_execution(
-            target_pc=target_pc,
+            target_pc=normalized_target,
             script_name=script_name,
             status=status,
             result_data=result_data,

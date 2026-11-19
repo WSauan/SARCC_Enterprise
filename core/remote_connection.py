@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import subprocess
 import base64
@@ -7,11 +8,34 @@ import sys
 import shutil
 import uuid
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Dict, Any, List, Optional
 from core.logger import get_logger
 
 log = get_logger(__name__)
+
+
+def resolve_target_hostname(target: str, timeout: float = 0.8) -> str:
+    """Se target for um IP válido, tenta resolver o hostname; se falhar, retorna o IP."""
+    cleaned = str(target or "").strip().upper()
+    if not cleaned:
+        return ""
+    try:
+        ipaddress.ip_address(cleaned)
+    except ValueError:
+        return cleaned
+
+    def _lookup() -> str:
+        fqdn = socket.gethostbyaddr(cleaned)[0]
+        short_name = fqdn.split(".")[0].strip().upper()
+        return short_name if short_name else cleaned
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_lookup)
+            return future.result(timeout=timeout)
+    except (socket.herror, socket.gaierror, OSError, FutureTimeoutError, Exception):
+        return cleaned
 
 
 class RemoteConnectionManager:
@@ -97,20 +121,21 @@ class RemoteConnectionManager:
 
     def execute_script(self, target_pc: str, script_content: str) -> Dict[str, Any]:
         start_time = time.time()
+        resolved_target = resolve_target_hostname(target_pc) or str(target_pc or "").strip()
 
         script_seguro = (
             "$OutputEncoding = [System.Text.Encoding]::UTF8\n"
             + script_content
         )
 
-        is_local = target_pc.strip().lower() in [
+        is_local = resolved_target.strip().lower() in [
             "localhost", "127.0.0.1", "::1", socket.gethostname().lower()
         ]
 
         if is_local:
             result = self._run_local(script_seguro)
         else:
-            probe = self.probe_host(target_pc, port_timeout=0.8)
+            probe = self.probe_host(resolved_target, port_timeout=0.8)
             if not probe["reachable"]:
                 elapsed = time.time() - start_time
                 return {
@@ -121,12 +146,12 @@ class RemoteConnectionManager:
 
             if probe["winrm_open"]:
                 try:
-                    result = self._run_native_remoting(target_pc, script_seguro)
+                    result = self._run_native_remoting(resolved_target, script_seguro)
                 except Exception as e_native:
-                    result = self._run_wmi(target_pc, script_seguro, str(e_native))
+                    result = self._run_wmi(resolved_target, script_seguro, str(e_native))
             else:
                 result = self._run_wmi(
-                    target_pc,
+                    resolved_target,
                     script_seguro,
                     "A porta WinRM (5985) está fechada/bloqueada pelo Firewall."
                 )
