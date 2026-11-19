@@ -65,6 +65,7 @@ class SchedulerView(BaseView):
         self.cmb_trigger.setFixedHeight(32)
         self.cmb_trigger.addItems([
             "Uma vez (Data/Hora específica)",
+            "Intervalo de datas (De / Até)",
             "Diariamente",
             "Semanalmente",
             "Ao Iniciar o Computador (Boot)",
@@ -81,6 +82,15 @@ class SchedulerView(BaseView):
         self.date_picker.setDate(QDate.currentDate())
         self.date_picker.setCalendarPopup(True)
         row2.addWidget(self.date_picker)
+
+        self.lbl_date_end = QLabel(" Até:")
+        row2.addWidget(self.lbl_date_end)
+        self.date_picker_end = QDateEdit()
+        self.date_picker_end.setFixedHeight(32)
+        self.date_picker_end.setDisplayFormat("dd/MM/yyyy")
+        self.date_picker_end.setDate(QDate.currentDate())
+        self.date_picker_end.setCalendarPopup(True)
+        row2.addWidget(self.date_picker_end)
 
         self.lbl_time = QLabel(" Horário:")
         row2.addWidget(self.lbl_time)
@@ -158,7 +168,6 @@ class SchedulerView(BaseView):
         self.cmb_scripts.clear()
         found_names = set()
 
-        # 1. Scripts salvos na Biblioteca SQLite
         try:
             for s in self.script_repo.list_as_dicts():
                 nome = s.get("nome", "").strip()
@@ -172,7 +181,6 @@ class SchedulerView(BaseView):
         except Exception:
             pass
 
-        # 2. Scripts físicos nas pastas locais
         paths_to_check = [
             get_data_dir() / "scripts",
             get_ps_scripts_dir() / "user_scripts"
@@ -204,11 +212,22 @@ class SchedulerView(BaseView):
         self.time_picker.hide()
         self.lbl_date.hide()
         self.date_picker.hide()
+        self.lbl_date_end.hide()
+        self.date_picker_end.hide()
         self.widget_days.hide()
 
         if trigger == "Uma vez (Data/Hora específica)":
+            self.lbl_date.setText(" Data:")
             self.lbl_date.show()
             self.date_picker.show()
+            self.lbl_time.show()
+            self.time_picker.show()
+        elif trigger == "Intervalo de datas (De / Até)":
+            self.lbl_date.setText(" De:")
+            self.lbl_date.show()
+            self.date_picker.show()
+            self.lbl_date_end.show()
+            self.date_picker_end.show()
             self.lbl_time.show()
             self.time_picker.show()
         elif trigger == "Diariamente":
@@ -267,6 +286,8 @@ class SchedulerView(BaseView):
             trigger_type = "Boot"
         elif "Logon" in ui_trigger:
             trigger_type = "Logon"
+        elif "Intervalo de datas" in ui_trigger:
+            trigger_type = "Daily"
         elif "Uma vez" in ui_trigger:
             trigger_type = "Once"
         elif "Diariamente" in ui_trigger:

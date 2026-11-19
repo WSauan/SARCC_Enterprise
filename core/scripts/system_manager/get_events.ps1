@@ -1,20 +1,52 @@
 <#
 .SYNOPSIS
-    Busca eventos em um log específico tratando silenciosamente quando não há ocorrências.
+    Busca eventos em um log específico com suporte a filtro de nível, IDs de reinicialização inesperada e janela temporal.
 #>
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $ErrorActionPreference = 'SilentlyContinue'
 
-$logName  = '{{log_name}}'
-$levelArr = @("{{level}}" -split ',' | ForEach-Object { [int]$_.Trim() })
-$maxEvt   = [int]'{{max_events}}'
+$logName   = '{{log_name}}'
+$levelRaw  = '{{level}}'.Trim()
+$idsRaw    = '{{event_ids}}'.Trim()
+$startRaw  = '{{start_time}}'.Trim()
+$endRaw    = '{{end_time}}'.Trim()
+$maxEvt    = [int]'{{max_events}}'
+
+if ([string]::IsNullOrWhiteSpace($logName)) {
+    $logName = "System"
+}
+
+$filterHash = @{
+    LogName = $logName
+}
+
+if (-not [string]::IsNullOrWhiteSpace($idsRaw)) {
+    $idList = @($idsRaw -split '[\s,;]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ })
+    if ($idList.Count -gt 0) {
+        $filterHash["Id"] = $idList
+    }
+} elseif (-not [string]::IsNullOrWhiteSpace($levelRaw)) {
+    $levelArr = @($levelRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ })
+    if ($levelArr.Count -gt 0) {
+        $filterHash["Level"] = $levelArr
+    }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($startRaw)) {
+    try {
+        $filterHash["StartTime"] = [datetime]::Parse($startRaw)
+    } catch { }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($endRaw)) {
+    try {
+        $filterHash["EndTime"] = [datetime]::Parse($endRaw)
+    } catch { }
+}
 
 try {
-    $events = Get-WinEvent -FilterHashtable @{
-        LogName = $logName
-        Level   = $levelArr
-    } -MaxEvents $maxEvt -ErrorAction Stop
+    $events = Get-WinEvent -FilterHashtable $filterHash -MaxEvents $maxEvt -ErrorAction Stop
 
     $res = @()
     foreach ($e in $events) {

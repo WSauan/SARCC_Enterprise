@@ -1,4 +1,4 @@
-# SARCC Enterprise — SysAdmin Remote Command Center (v2.10.0)
+# SARCC Enterprise — SysAdmin Remote Command Center (v2.11.0)
 
 O **SARCC Enterprise** é uma plataforma desktop *Enterprise-grade* para administração remota, telemetria física em tempo real, automação de tarefas, gestão de pacotes, manutenção de impressão e suporte de estações Windows em ambientes corporativos (Active Directory / Workgroups).
 
@@ -10,7 +10,7 @@ Construído em Python com interface gráfica em **PyQt6** e arquitetura em camad
 
 ## 🏗️ Arquitetura do Projeto
 
-O projeto é estruturado em camadas desacopladas com cobertura de testes unitários no padrão 1-para-1 (56 testes automatizados):
+O projeto é estruturado em camadas desacopladas com cobertura de testes unitários no padrão 1-para-1 (58 testes automatizados):
 
 ~~~text
 SARCC_Enterprise/
@@ -29,7 +29,7 @@ SARCC_Enterprise/
 │   ├── dialogs/                 # Diálogos modais e Cofre de Autenticação
 │   ├── views/                   # 9 Telas operacionais do sistema
 │   └── widgets/                 # Componentes customizados (Editor PowerShell com Syntax Highlighting)
-├── tests/                       # Suíte automatizada Pytest (56 testes unitários 1-para-1)
+├── tests/                       # Suíte automatizada Pytest (58 testes unitários 1-para-1)
 ├── build_release.ps1            # Pipeline automatizado de testes, build PyInstaller e empacotamento ZIP
 ├── CHANGELOG.md                 # Histórico detalhado de versões e entregas
 └── main.py                      # Ponto de entrada com AppUserModelID e Exception Hook global
@@ -48,6 +48,7 @@ SARCC_Enterprise/
 ### 🌐 Dashboard, Inventário Físico & Reparo de Agentes
 - **Telemetria Física & S.M.A.R.T.:** Leitura em tempo real de Hostname, **Descrição do Computador** (local/setor), **Fabricante e Modelo** do equipamento, **Serial / Service Tag da BIOS**, SO, IP, MAC, Uptime, CPU (uso e temperatura), Antivírus, ocupação do Disco C:, **Tipo de Mídia** (`NVMe SSD`, `SSD` ou `HDD`), saúde física **S.M.A.R.T.** e **Topologia de Memória RAM** (slots ocupados/totais e velocidade em MHz).
 - **Detecção Híbrida de Perfis e Pastas `TEMP*`:** Cruza dados do `Win32_UserProfile` com varredura física em `C:\Users`, contabilizando e destacando perfis temporários/órfãos (`TEMP` / `TEMP.EBSERHNET.*`) e filtrando *Junctions* do sistema.
+- **Status Real de Sessões e Logoff Seletivo:** Identificação de sessões **Ativo**, **Desconectado** e **Em 2º Plano** via `quser`, colunas redimensionáveis na tabela de usuários e encerramento seletivo por usuário.
 - **Monitoramento de Agentes e Estado:** Validação em tempo real de Zabbix Agent 2, GLPI Agent, Desktop Info, RDP, AnyDesk (com extração automática do ID numérico), UltraVNC, versão do **Winget** e alerta de **Reboot Pendente** (`WU`, `CBS`, `PFR`).
 - **Reparo e Deploy Automatizado de Agentes (1 Clique):**
   - **Zabbix Agent 2:** Instala ou reconfigura o serviço lendo dinamicamente o IP do servidor (`10.8.245.12`) a partir do `.conf` da rede, reconstrói os contadores de desempenho (`lodctr /R`) e configura *Auto-Healing* (`sc.exe failure`).
@@ -59,9 +60,10 @@ SARCC_Enterprise/
 
 ### 🛠️ Gerenciador de Processos, Serviços, Eventos e Impressoras
 - **Task Manager Remoto:** Listagem em tempo real de processos (PID, Memória MB, CPU) e serviços do Windows com ações diretas de `Kill`, `Start`, `Stop` e `Restart`.
-- **Auditoria de Eventos Críticos:** Resumo instantâneo dos 5 eventos críticos/erros mais recentes (`System` e `Application`) e buscador completo do Event Viewer com visualização detalhada e cópia rápida.
+- **Auditoria de Eventos Críticos, Reinicializações e Períodos:** Resumo instantâneo dos 5 eventos críticos/erros mais recentes, filtro dedicado para reinicializações inesperadas (`41 6008 1074 6006 6009 1001`), janelas rápidas (`Últimas 2h`, `Últimas 12h`, `Últimas 24h`, `Últimos 7 dias`, `Últimos 30 dias`) e intervalo de data/hora (`De / Até`).
 - **Gestão de Impressoras & Spooler:**
   - Inventário completo das impressoras locais e mapeadas na estação (Nome, Porta/IP, Driver, Trabalhos na Fila e Status).
+  - **🔎 Buscar Impressoras:** Força atualização de política de computador (`gpupdate /target:computer /force`) e recarrega a lista de impressoras.
   - **🧹 Destravar Spooler (Limpar Tudo):** Para o serviço `Spooler` e processos `splwow64`, elimina todos os arquivos `.SHD` e `.SPL` travados em `C:\Windows\System32\spool\PRINTERS` e reinicia o serviço automaticamente.
   - Ações individuais para **Limpar Fila Selecionada** e **Remover Impressora**.
 
@@ -75,11 +77,11 @@ SARCC_Enterprise/
 - **Extração e Deploy Inteligente de Drivers:** Coleta seletiva de drivers para a rede comparando a diretiva `DriverVer` dos arquivos `.inf` locais contra o servidor SMB, e instalação automatizada por fabricante/modelo de placa-mãe e categorias (Vídeo, Rede, Áudio, Bluetooth, Câmeras).
 
 ### ⚡ Central de Comando em Lote, Agendador e Terminal
-- **Execução em Lote (`ExecutionView`):** Disparo simultâneo de múltiplos scripts da biblioteca para dezenas de computadores (com importação de listas `.txt`/`.csv` e deduplicação automática).
+- **Execução em Lote (`ExecutionView`):** Disparo simultâneo de múltiplos scripts da biblioteca para dezenas de computadores (com importação de listas `.txt`/`.csv`, deduplicação automática e filtro rápido de alvos online).
 - **Scripts de Limpeza Blindados (`Limpeza_Padrao` & `Limpeza_Extrema`):** Expurgo seguro de perfis inativos, chaves `.bak` corrompidas no Registro e pastas `TEMP*` órfãs em `C:\Users`, preservando contas VIP e bloqueando exclusão de *ReparsePoints* (`Junctions`).
-- **Agendador Remoto (`SchedulerView`):** Criação de tarefas agendadas rodando como `NT AUTHORITY\SYSTEM` integradas diretamente à biblioteca SQLite de scripts, com suporte a notebooks em bateria.
-- **Terminal Interativo (`ShellView`):** Console PowerShell remoto com 17 atalhos prontos de diagnóstico de rede (`ping`, `tracert`, `Resolve-DnsName`, `Test-NetConnection`, `netstat`, `arp`, `wlan`, `Firewall`).
-- **Histórico e Relatórios GLPI (`HistoryView`):** Auditoria completa com filtro por data/status, lixeira com restauração, visualização de JSON estruturado e geração de relatório oficial em `.txt` padronizado para anexar em chamados do GLPI.
+- **Agendador Remoto (`SchedulerView`):** Criação de tarefas agendadas rodando como `NT AUTHORITY\SYSTEM` integradas diretamente à biblioteca SQLite de scripts, com suporte a intervalo de datas e notebooks em bateria.
+- **Terminal Interativo (`ShellView`):** Console PowerShell remoto com atalhos prontos de diagnóstico e reset de rede (`DNS`, `ARP`, `NetBIOS`), conversão de codificação para comandos legados e execução local via arquivo temporário evitando `WinError 206`.
+- **Histórico e Relatórios GLPI (`HistoryView`):** Auditoria completa com filtro por data exata, intervalo de data/hora (`De / Até`), janelas recentes e status, lixeira com restauração, visualização de JSON estruturado e geração de relatório oficial em `.txt` padronizado para anexar em chamados do GLPI.
 
 ---
 
@@ -87,7 +89,7 @@ SARCC_Enterprise/
 
 - **Estação do Administrador (Onde o SARCC roda):**
   - Windows 10 ou Windows 11 (x64).
-  - Python 3.10 ou superior (para execução via código-fonte) ou executável portátil compilado (`SARCC_v2.10.0_YYYYMMDD.exe`).
+  - Python 3.10 ou superior (para execução via código-fonte) ou executável portátil compilado (`SARCC_v2.11.0_YYYYMMDD.exe`).
 - **Máquinas Alvo (Endpoints):**
   - WinRM habilitado (Porta TCP `5985`) ou WMI/SMB liberados (Porta TCP `445` / `C$`).
   - Regras ICMP (Ping) liberadas para verificação de conectividade.
@@ -117,7 +119,7 @@ pytest -v
 ~~~
 
 ### 4. Gerar executável e pacote de distribuição (Release)
-O script `build_release.ps1` executa automaticamente toda a bateria de 56 testes do `pytest`, compila o binário único com elevação de Administrador (`--uac-admin`) e ícone oficial, e monta a pasta portátil e o arquivo `.zip` em `releases/`:
+O script `build_release.ps1` executa automaticamente toda a bateria de testes do `pytest`, compila o binário único com elevação de Administrador (`--uac-admin`) e ícone oficial, e monta a pasta portátil e o arquivo `.zip` em `releases/`:
 ~~~powershell
-.\build_release.ps1 -Version "2.10.0"
+.\build_release.ps1 -Version "2.11.0"
 ~~~

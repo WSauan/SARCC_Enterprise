@@ -1,5 +1,13 @@
 # Histórico de Versões (Changelog) — SARCC Enterprise
 
+## [v2.11.0] — 2026-11-19
+### 🚀 Diagnóstico de Reinicializações, Filtros de Data/Hora e Melhorias Operacionais
+* **Filtro de Reinicializações Inesperadas e Intervalo de Data/Hora (`SystemManagerView` & `get_events.ps1`):** Adicionada opção de filtro para eventos de reinicialização (`41 6008 1074 6006 6009 1001`) e seleção de período (`Últimas 2h`, `Últimas 12h`, `Últimas 24h`, `Últimos 7 dias`, `Últimos 30 dias` e `Intervalo de data/hora (De / Até)`).
+* **Filtros de Intervalo de Data/Hora (`HistoryView` & `SchedulerView`):** Adicionada seleção de intervalo (`De / Até` com calendário e horário `HH:mm`) e janelas de tempo recentes na auditoria de logs e suporte a intervalo de datas no agendador.
+* **Busca de Impressoras via GPO (`SystemManagerView`):** Adicionado botão **🔎 Buscar Impressoras** na aba **Impressoras & Spooler** para forçar atualização de política de computador (`gpupdate /target:computer /force`) e recarregar a lista de impressoras.
+* **Status Real de Sessões e Logoff Seletivo (`DashboardView` & `telemetry.ps1`):** Identificação de sessões **Ativo**, **Desconectado** e **Em 2º Plano** via `quser`, colunas redimensionáveis, logoff de usuário específico e edição remota da descrição/local da máquina.
+* **Terminal Interativo e Execução em Lote (`ShellView`, `ExecutionView`, `run_command.ps1` & `RemoteConnectionManager`):** Correção do erro de `OutputEncoding`, conversão `CP850` para `UTF-8` em comandos legados, atalho de reset de rede, execução local via arquivo temporário evitando `WinError 206` e filtro rápido de alvos online.
+
 ## [v2.10.0] — 2026-11-13
 ### 🚀 Telemetria Física S.M.A.R.T., Reparo de Agentes e Gestão de Impressoras
 * **Inventário Físico e Saúde S.M.A.R.T. (`DashboardView`):** Leitura em tempo real da **Descrição do Computador** (local/setor), **Fabricante e Modelo** do equipamento, **Serial / Service Tag da BIOS**, **Tipo de Mídia** (`NVMe SSD`, `SSD` ou `HDD`), estado físico **S.M.A.R.T.** e **Topologia de Memória RAM** (slots ocupados/totais e frequência em MHz).

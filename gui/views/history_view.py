@@ -1,13 +1,13 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTreeWidget, QTreeWidgetItem,
     QHeaderView, QDialog, QTextEdit, QMessageBox,
     QFileDialog, QCheckBox, QLineEdit, QComboBox,
-    QDateEdit, QAbstractItemView, QGroupBox
+    QDateEdit, QDateTimeEdit, QAbstractItemView, QGroupBox
 )
-from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtCore import Qt, QDate, QTime, QDateTime
 
 from infrastructure.repositories.execution_repository import ExecutionRepository
 from domain.services.audit_service import AuditService, extract_json_from_result, format_duration
@@ -157,6 +157,21 @@ class HistoryView(QWidget):
         self.chk_date_filter.stateChanged.connect(self.apply_filters)
         control_bar.addWidget(self.chk_date_filter)
 
+        self.cmb_date_mode = QComboBox()
+        self.cmb_date_mode.setFixedHeight(32)
+        self.cmb_date_mode.addItems([
+            "Data exata",
+            "Intervalo de data/hora (De / Até)",
+            "Últimas 2 horas",
+            "Últimas 12 horas",
+            "Últimas 24 horas",
+            "Últimos 7 dias",
+            "Últimos 30 dias"
+        ])
+        self.cmb_date_mode.setEnabled(False)
+        self.cmb_date_mode.currentTextChanged.connect(self._on_date_mode_changed)
+        control_bar.addWidget(self.cmb_date_mode)
+
         self.dt_filter = QDateEdit(QDate.currentDate())
         self.dt_filter.setFixedHeight(32)
         self.dt_filter.setCalendarPopup(True)
@@ -167,10 +182,45 @@ class HistoryView(QWidget):
         cal.setMinimumWidth(320)
         cal.setMinimumHeight(240)
         self.dt_filter.dateChanged.connect(self.apply_filters)
-        self.chk_date_filter.toggled.connect(self.dt_filter.setEnabled)
         control_bar.addWidget(self.dt_filter)
 
-        control_bar.addSpacing(15)
+        self.lbl_from = QLabel("De:")
+        self.lbl_from.setVisible(False)
+        control_bar.addWidget(self.lbl_from)
+
+        self.dt_filter_start = QDateTimeEdit(QDateTime(QDate.currentDate(), QTime(0, 0)))
+        self.dt_filter_start.setFixedHeight(32)
+        self.dt_filter_start.setCalendarPopup(True)
+        self.dt_filter_start.setDisplayFormat("dd/MM/yyyy HH:mm")
+        self.dt_filter_start.setStyleSheet("padding: 0 6px;")
+        self.dt_filter_start.setEnabled(False)
+        self.dt_filter_start.setVisible(False)
+        cal_start = self.dt_filter_start.calendarWidget()
+        cal_start.setMinimumWidth(320)
+        cal_start.setMinimumHeight(240)
+        self.dt_filter_start.dateTimeChanged.connect(self.apply_filters)
+        control_bar.addWidget(self.dt_filter_start)
+
+        self.lbl_to = QLabel("Até:")
+        self.lbl_to.setVisible(False)
+        control_bar.addWidget(self.lbl_to)
+
+        self.dt_filter_end = QDateTimeEdit(QDateTime(QDate.currentDate(), QTime(23, 59)))
+        self.dt_filter_end.setFixedHeight(32)
+        self.dt_filter_end.setCalendarPopup(True)
+        self.dt_filter_end.setDisplayFormat("dd/MM/yyyy HH:mm")
+        self.dt_filter_end.setStyleSheet("padding: 0 6px;")
+        self.dt_filter_end.setEnabled(False)
+        self.dt_filter_end.setVisible(False)
+        cal_end = self.dt_filter_end.calendarWidget()
+        cal_end.setMinimumWidth(320)
+        cal_end.setMinimumHeight(240)
+        self.dt_filter_end.dateTimeChanged.connect(self.apply_filters)
+        control_bar.addWidget(self.dt_filter_end)
+
+        self.chk_date_filter.toggled.connect(self._on_date_filter_toggled)
+
+        control_bar.addSpacing(10)
 
         self.cmb_filter_status = QComboBox()
         self.cmb_filter_status.setFixedHeight(32)
@@ -219,6 +269,39 @@ class HistoryView(QWidget):
         self.tree.itemDoubleClicked.connect(self.on_item_double_clicked)
         layout.addWidget(self.tree)
 
+    def _on_date_filter_toggled(self, enabled: bool):
+        self.cmb_date_mode.setEnabled(enabled)
+        self._on_date_mode_changed(self.cmb_date_mode.currentText())
+
+    def _on_date_mode_changed(self, mode: str):
+        enabled = self.chk_date_filter.isChecked()
+        is_exact = (not enabled) or (mode == "Data exata")
+        is_range = enabled and (mode == "Intervalo de data/hora (De / Até)")
+
+        self.dt_filter.setVisible(is_exact)
+        self.dt_filter.setEnabled(enabled and mode == "Data exata")
+
+        self.lbl_from.setVisible(is_range)
+        self.dt_filter_start.setVisible(is_range)
+        self.dt_filter_start.setEnabled(is_range)
+
+        self.lbl_to.setVisible(is_range)
+        self.dt_filter_end.setVisible(is_range)
+        self.dt_filter_end.setEnabled(is_range)
+        self.apply_filters()
+
+    @staticmethod
+    def _parse_log_datetime(raw_text: str):
+        txt = (raw_text or "").strip()
+        if not txt or txt == "-":
+            return None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M"):
+            try:
+                return datetime.strptime(txt[:19], fmt)
+            except ValueError:
+                continue
+        return None
+
     @staticmethod
     def _format_duration(seconds: float) -> str:
         return format_duration(seconds)
@@ -244,7 +327,11 @@ class HistoryView(QWidget):
         search_text = self.inp_search.text().lower().strip()
         status_filter = self.cmb_filter_status.currentText()
         use_date = self.chk_date_filter.isChecked()
+        mode = self.cmb_date_mode.currentText()
         filter_date_str = self.dt_filter.date().toString("yyyy-MM-dd")
+        dt_start = self.dt_filter_start.dateTime().toPyDateTime().replace(second=0, microsecond=0)
+        dt_end = self.dt_filter_end.dateTime().toPyDateTime().replace(second=59, microsecond=999999)
+        now = datetime.now()
 
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
@@ -265,9 +352,28 @@ class HistoryView(QWidget):
                     match = False
 
             if match and use_date:
-                log_date = item.text(3)[:10]
-                if log_date != filter_date_str:
-                    match = False
+                log_dt = self._parse_log_datetime(item.text(3))
+                if mode == "Data exata":
+                    if item.text(3)[:10] != filter_date_str:
+                        match = False
+                elif mode == "Intervalo de data/hora (De / Até)":
+                    if not log_dt or not (dt_start <= log_dt <= dt_end):
+                        match = False
+                elif mode == "Últimas 2 horas":
+                    if not log_dt or log_dt < (now - timedelta(hours=2)):
+                        match = False
+                elif mode == "Últimas 12 horas":
+                    if not log_dt or log_dt < (now - timedelta(hours=12)):
+                        match = False
+                elif mode == "Últimas 24 horas":
+                    if not log_dt or log_dt < (now - timedelta(hours=24)):
+                        match = False
+                elif mode == "Últimos 7 dias":
+                    if not log_dt or log_dt < (now - timedelta(days=7)):
+                        match = False
+                elif mode == "Últimos 30 dias":
+                    if not log_dt or log_dt < (now - timedelta(days=30)):
+                        match = False
 
             item.setHidden(not match)
 

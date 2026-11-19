@@ -1,20 +1,23 @@
 import json
 import os
 import base64
+from datetime import datetime, timedelta
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QGroupBox,
     QMessageBox, QTabWidget, QComboBox, QDialog,
-    QTextEdit, QGridLayout, QApplication
+    QTextEdit, QGridLayout, QApplication, QDateTimeEdit
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDate, QTime, QDateTime
 
 from core.remote_connection import RemoteConnectionManager
 from core.ps_loader import load_ps_template, PsTemplateError
 from infrastructure.repositories.execution_repository import ExecutionRepository
 from gui.views.base_view import BaseView
 from gui.views.software_view import fix_mojibake
+
+REBOOT_EVENT_IDS = "41,6008,1074,6006,6009,1001"
 
 
 def safe_int(value, default: int = 0) -> int:
@@ -156,6 +159,43 @@ def _get_level_color(event_data):
     return "#e0e0e0"
 
 
+GPO_PRINTER_SYNC_SCRIPT = """
+$ErrorActionPreference = 'Continue'
+$LogData = @{
+    Script      = "Buscar Impressoras (GPO / gpupdate)"
+    Inicio      = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    Computador  = $env:COMPUTERNAME
+    StatusFinal = "SUCESSO"
+    Detalhes    = @()
+    Mensagem    = ""
+}
+try {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "gpupdate.exe"
+    $psi.Arguments = "/target:computer /force"
+    $psi.RedirectStandardInput  = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow  = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    try { $proc.StandardInput.WriteLine("N"); $proc.StandardInput.Flush(); $proc.StandardInput.Close() } catch { }
+    if (-not $proc.WaitForExit(45000)) {
+        try { $proc.Kill() } catch { }
+    }
+    $LogData.Detalhes += "Política de computador atualizada via gpupdate /target:computer /force."
+    $LogData.Mensagem = "Busca de impressoras via GPO concluída."
+} catch {
+    $LogData.StatusFinal = "ERRO"
+    $LogData.Mensagem = "Falha ao buscar impressoras via GPO: $($_.Exception.Message)"
+    $LogData.Detalhes += $_.Exception.Message
+} finally {
+    $LogData.Fim = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $LogData | ConvertTo-Json -Depth 3 -Compress | Write-Output
+}
+"""
+
+
 class SysManagerWorker(QThread):
     finished = pyqtSignal(list, str)
     error = pyqtSignal(str)
@@ -201,11 +241,17 @@ class SysManagerWorker(QThread):
                 "system_manager", "get_events",
                 log_name=self.extra_params.get("log_name", "System"),
                 level=self.extra_params.get("level", "1,2"),
+                event_ids=self.extra_params.get("event_ids", ""),
+                start_time=self.extra_params.get("start_time", ""),
+                end_time=self.extra_params.get("end_time", ""),
                 max_events=self.extra_params.get("max", 50),
             )
 
         if self.action_type == "get_printers":
             return load_ps_template("system_manager", "get_printers")
+
+        if self.action_type == "search_gpo_printers":
+            return GPO_PRINTER_SYNC_SCRIPT
 
         if self.action_type in ("flush_spooler", "clear_printer_queue", "remove_printer"):
             return load_ps_template(
@@ -423,7 +469,7 @@ class SystemManagerView(BaseView):
         self.tbl_summary.setFixedHeight(90)
         ev_layout.addWidget(self.tbl_summary)
 
-        ev_layout.addSpacing(15)
+        ev_layout.addSpacing(10)
 
         ev_controls = QHBoxLayout()
         ev_controls.setSpacing(8)
@@ -436,9 +482,36 @@ class SystemManagerView(BaseView):
         self.cmb_ev_level = QComboBox()
         self.cmb_ev_level.setFixedHeight(32)
         self.cmb_ev_level.addItem("Crítico / Erro", "1,2")
+        self.cmb_ev_level.addItem(f"Reinicializações inesperadas ({REBOOT_EVENT_IDS.replace(',', ' ')})", "REBOOT")
         self.cmb_ev_level.addItem("Aviso", "3")
         self.cmb_ev_level.addItem("Informação", "4")
         self.cmb_ev_level.setStyleSheet("padding: 0 10px;")
+
+        self.cmb_ev_range = QComboBox()
+        self.cmb_ev_range.setFixedHeight(32)
+        self.cmb_ev_range.addItems([
+            "Qualquer período",
+            "Últimas 2 horas",
+            "Últimas 12 horas",
+            "Últimas 24 horas",
+            "Últimos 7 dias",
+            "Últimos 30 dias",
+            "Intervalo de data/hora (De / Até)"
+        ])
+        self.cmb_ev_range.setStyleSheet("padding: 0 10px;")
+        self.cmb_ev_range.currentTextChanged.connect(self._toggle_event_date_range)
+
+        self.lbl_ev_from = QLabel("De:")
+        self.dt_ev_from = QDateTimeEdit(QDateTime(QDate.currentDate().addDays(-7), QTime(0, 0)))
+        self.dt_ev_from.setFixedHeight(32)
+        self.dt_ev_from.setCalendarPopup(True)
+        self.dt_ev_from.setDisplayFormat("dd/MM/yyyy HH:mm")
+
+        self.lbl_ev_to = QLabel("Até:")
+        self.dt_ev_to = QDateTimeEdit(QDateTime(QDate.currentDate(), QTime(23, 59)))
+        self.dt_ev_to.setFixedHeight(32)
+        self.dt_ev_to.setCalendarPopup(True)
+        self.dt_ev_to.setDisplayFormat("dd/MM/yyyy HH:mm")
 
         self.cmb_ev_max = QComboBox()
         self.cmb_ev_max.setFixedHeight(32)
@@ -463,13 +536,21 @@ class SystemManagerView(BaseView):
 
         ev_controls.addWidget(QLabel("Log:"))
         ev_controls.addWidget(self.cmb_ev_log)
-        ev_controls.addWidget(QLabel("Nível:"))
+        ev_controls.addWidget(QLabel("Filtro:"))
         ev_controls.addWidget(self.cmb_ev_level)
+        ev_controls.addWidget(QLabel("Período:"))
+        ev_controls.addWidget(self.cmb_ev_range)
+        ev_controls.addWidget(self.lbl_ev_from)
+        ev_controls.addWidget(self.dt_ev_from)
+        ev_controls.addWidget(self.lbl_ev_to)
+        ev_controls.addWidget(self.dt_ev_to)
         ev_controls.addWidget(QLabel("Limite:"))
         ev_controls.addWidget(self.cmb_ev_max)
         ev_controls.addWidget(self.inp_search_ev, stretch=1)
         ev_controls.addWidget(self.btn_load_events)
         ev_layout.addLayout(ev_controls)
+
+        self._toggle_event_date_range(self.cmb_ev_range.currentText())
 
         self.tbl_events = QTableWidget(0, 5)
         self.tbl_events.setHorizontalHeaderLabels(["ID", "Data/Hora", "Nível", "Fonte", "Mensagem"])
@@ -498,6 +579,17 @@ class SystemManagerView(BaseView):
         self.inp_search_printers.setPlaceholderText("🔍 Filtrar impressoras por nome, IP ou driver...")
         self.inp_search_printers.setStyleSheet("padding: 0 10px;")
         self.inp_search_printers.textChanged.connect(lambda text: self.filter_table(self.tbl_printers, text))
+
+        self.btn_search_printers = QPushButton("🔎 Buscar Impressoras")
+        self.btn_search_printers.setFixedHeight(32)
+        self.btn_search_printers.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_search_printers.setToolTip(
+            "Força a atualização de GPO (gpupdate) na estação e atualiza a lista de impressoras (ex.: HUL-UFS)"
+        )
+        self.btn_search_printers.setStyleSheet(
+            "background-color: #1e8a5e; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;"
+        )
+        self.btn_search_printers.clicked.connect(lambda: self.run_worker("search_gpo_printers"))
 
         self.btn_load_printers = QPushButton("↻ Listar Impressoras")
         self.btn_load_printers.setFixedHeight(32)
@@ -533,6 +625,7 @@ class SystemManagerView(BaseView):
         self.btn_remove_printer.clicked.connect(self.remove_selected_printer)
 
         prt_controls.addWidget(self.inp_search_printers, stretch=1)
+        prt_controls.addWidget(self.btn_search_printers)
         prt_controls.addWidget(self.btn_load_printers)
         prt_controls.addWidget(self.btn_flush_spooler)
         prt_controls.addWidget(self.btn_clear_queue)
@@ -558,6 +651,32 @@ class SystemManagerView(BaseView):
 
         self.tabs.currentChanged.connect(self.on_tab_changed)
         layout.addWidget(self.tabs)
+
+    def _toggle_event_date_range(self, range_text: str):
+        is_custom = range_text == "Intervalo de data/hora (De / Até)"
+        self.lbl_ev_from.setVisible(is_custom)
+        self.dt_ev_from.setVisible(is_custom)
+        self.lbl_ev_to.setVisible(is_custom)
+        self.dt_ev_to.setVisible(is_custom)
+
+    def _compute_event_time_bounds(self) -> tuple[str, str]:
+        now = datetime.now()
+        mode = self.cmb_ev_range.currentText()
+        if mode == "Últimas 2 horas":
+            return (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S"), ""
+        if mode == "Últimas 12 horas":
+            return (now - timedelta(hours=12)).strftime("%Y-%m-%d %H:%M:%S"), ""
+        if mode == "Últimas 24 horas":
+            return (now - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S"), ""
+        if mode == "Últimos 7 dias":
+            return (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S"), ""
+        if mode == "Últimos 30 dias":
+            return (now - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S"), ""
+        if mode == "Intervalo de data/hora (De / Até)":
+            start_str = self.dt_ev_from.dateTime().toString("yyyy-MM-dd HH:mm:00")
+            end_str = self.dt_ev_to.dateTime().toString("yyyy-MM-dd HH:mm:59")
+            return start_str, end_str
+        return "", ""
 
     def filter_table(self, table, text):
         search_text = text.lower().strip()
@@ -599,6 +718,9 @@ class SystemManagerView(BaseView):
         self.btn_refresh_summary.setEnabled(True)
         self.btn_refresh_summary.setText("↻ Atualizar Resumo")
 
+        self.btn_search_printers.setEnabled(True)
+        self.btn_search_printers.setText("🔎 Buscar Impressoras")
+
         self.btn_load_printers.setEnabled(True)
         self.btn_load_printers.setText("↻ Listar Impressoras")
 
@@ -616,7 +738,16 @@ class SystemManagerView(BaseView):
             if not extra_params:
                 extra_params = {}
             extra_params["log_name"] = self.cmb_ev_log.currentText()
-            extra_params["level"] = self.cmb_ev_level.currentData()
+            level_val = self.cmb_ev_level.currentData()
+            if level_val == "REBOOT":
+                extra_params["level"] = ""
+                extra_params["event_ids"] = REBOOT_EVENT_IDS
+            else:
+                extra_params["level"] = level_val
+                extra_params["event_ids"] = ""
+            start_t, end_t = self._compute_event_time_bounds()
+            extra_params["start_time"] = start_t
+            extra_params["end_time"] = end_t
             extra_params["max"] = self.cmb_ev_max.currentText()
             self.btn_load_events.setEnabled(False)
             self.btn_load_events.setText("Buscando...")
@@ -630,6 +761,9 @@ class SystemManagerView(BaseView):
             self.btn_refresh_summary.setEnabled(False)
             self.btn_refresh_summary.setText("Carregando...")
             self.lbl_summary_status.setText("Consultando eventos recentes...")
+        elif action_type == "search_gpo_printers":
+            self.btn_search_printers.setEnabled(False)
+            self.btn_search_printers.setText("⏳ Buscando...")
         elif action_type == "get_printers":
             self.btn_load_printers.setEnabled(False)
             self.btn_load_printers.setText("Listando...")
@@ -778,7 +912,7 @@ class SystemManagerView(BaseView):
             self.populate_critical_summary(data_list)
             return
 
-        if action_type in ("kill_process", "manage_service", "flush_spooler", "clear_printer_queue", "remove_printer"):
+        if action_type in ("kill_process", "manage_service", "search_gpo_printers", "flush_spooler", "clear_printer_queue", "remove_printer"):
             log_dict = data_list[0] if (data_list and isinstance(data_list[0], dict)) else {}
             status_final = str(log_dict.get("StatusFinal", "SUCESSO"))
             mensagem = fix_mojibake(str(log_dict.get("Mensagem", "Ação concluída.")))
@@ -786,6 +920,7 @@ class SystemManagerView(BaseView):
             action_meta = {
                 "kill_process":        ("Encerrar Processo",      "[Gerenciador] Processos",   "get_processes"),
                 "manage_service":      ("Gerenciar Serviço",      "[Gerenciador] Serviços",    "get_services"),
+                "search_gpo_printers": ("Buscar Impressoras GPO", "[Gerenciador] Impressoras", "get_printers"),
                 "flush_spooler":       ("Destravar Spooler",      "[Gerenciador] Impressoras", "get_printers"),
                 "clear_printer_queue": ("Limpar Fila Impressão",  "[Gerenciador] Impressoras", "get_printers"),
                 "remove_printer":      ("Remover Impressora",     "[Gerenciador] Impressoras", "get_printers"),
@@ -801,10 +936,11 @@ class SystemManagerView(BaseView):
                 module=modulo
             )
 
-            if "SUCESSO" in status_final.upper():
-                QMessageBox.information(self, "Sucesso", mensagem)
-            else:
-                QMessageBox.warning(self, "Aviso da Ação", mensagem)
+            if action_type != "search_gpo_printers":
+                if "SUCESSO" in status_final.upper():
+                    QMessageBox.information(self, "Sucesso", mensagem)
+                else:
+                    QMessageBox.warning(self, "Aviso da Ação", mensagem)
 
             self.run_worker(refresh_action)
             return
