@@ -7,6 +7,7 @@ import sys
 import shutil
 import uuid
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional
 from core.logger import get_logger
 
@@ -17,7 +18,7 @@ class RemoteConnectionManager:
     def __init__(self):
         pass
 
-    def _is_port_open(self, host: str, port: int, timeout: float = 1.0) -> bool:
+    def _is_port_open(self, host: str, port: int, timeout: float = 0.8) -> bool:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
         try:
@@ -28,6 +29,71 @@ class RemoteConnectionManager:
             return False
         finally:
             s.close()
+
+    def ping_host(self, host: str, timeout_ms: int = 500) -> bool:
+        """Verifica resposta ICMP (Ping) em um único host."""
+        target = str(host or "").strip()
+        if not target:
+            return False
+        if target.lower() in ("localhost", "127.0.0.1", "::1", socket.gethostname().lower()):
+            return True
+        try:
+            res = subprocess.run(
+                ["ping", "-n", "1", "-w", str(timeout_ms), target],
+                capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            out_low = (res.stdout or "").lower()
+            return res.returncode == 0 and ("ttl=" in out_low or "time<" in out_low or "tempo<" in out_low)
+        except Exception:
+            return False
+
+    def probe_host(self, target_pc: str, port_timeout: float = 0.8) -> Dict[str, Any]:
+        """
+        Sonda em paralelo WinRM (5985) e SMB/WMI (445) com timeout curto.
+        Só executa Ping caso ambas as portas estejam fechadas, evitando falso negativo
+        quando o ICMP está bloqueado no firewall mas o gerenciamento está ativo.
+        """
+        host = str(target_pc or "").strip()
+        if not host:
+            return {"reachable": False, "winrm_open": False, "smb_open": False, "ping_ok": False, "reason": "Alvo vazio."}
+
+        if host.lower() in ("localhost", "127.0.0.1", "::1", socket.gethostname().lower()):
+            return {"reachable": True, "winrm_open": True, "smb_open": True, "ping_ok": True, "reason": "Local"}
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_5985 = pool.submit(self._is_port_open, host, 5985, port_timeout)
+            f_445 = pool.submit(self._is_port_open, host, 445, port_timeout)
+            winrm_open = f_5985.result()
+            smb_open = f_445.result()
+
+        if winrm_open or smb_open:
+            return {
+                "reachable": True,
+                "winrm_open": winrm_open,
+                "smb_open": smb_open,
+                "ping_ok": True,
+                "reason": "OK"
+            }
+
+        ping_ok = self.ping_host(host, timeout_ms=500)
+        if ping_ok:
+            reason = (
+                f"Estação '{host}' responde a Ping, mas as portas WinRM (5985) e SMB (445) "
+                "estão fechadas ou bloqueadas pelo Firewall."
+            )
+        else:
+            reason = (
+                f"Estação '{host}' offline ou inacessível na rede "
+                "(sem resposta de Ping e portas 5985/445 fechadas)."
+            )
+
+        return {
+            "reachable": False,
+            "winrm_open": False,
+            "smb_open": False,
+            "ping_ok": ping_ok,
+            "reason": reason
+        }
 
     def execute_script(self, target_pc: str, script_content: str) -> Dict[str, Any]:
         start_time = time.time()
@@ -43,17 +109,27 @@ class RemoteConnectionManager:
 
         if is_local:
             result = self._run_local(script_seguro)
-        elif self._is_port_open(target_pc, 5985):
-            try:
-                result = self._run_native_remoting(target_pc, script_seguro)
-            except Exception as e_native:
-                result = self._run_wmi(target_pc, script_seguro, str(e_native))
         else:
-            result = self._run_wmi(
-                target_pc,
-                script_seguro,
-                "A porta WinRM (5985) está fechada/bloqueada pelo Firewall."
-            )
+            probe = self.probe_host(target_pc, port_timeout=0.8)
+            if not probe["reachable"]:
+                elapsed = time.time() - start_time
+                return {
+                    "status": "Erro Fatal",
+                    "log_saida": f"{probe['reason']}\n\n[⏱️ Tempo de Execução da Conexão: {elapsed:.2f} segundos]",
+                    "json_data": {}
+                }
+
+            if probe["winrm_open"]:
+                try:
+                    result = self._run_native_remoting(target_pc, script_seguro)
+                except Exception as e_native:
+                    result = self._run_wmi(target_pc, script_seguro, str(e_native))
+            else:
+                result = self._run_wmi(
+                    target_pc,
+                    script_seguro,
+                    "A porta WinRM (5985) está fechada/bloqueada pelo Firewall."
+                )
 
         elapsed = time.time() - start_time
         result["log_saida"] += f"\n\n[⏱️ Tempo de Execução da Conexão: {elapsed:.2f} segundos]"
@@ -66,7 +142,6 @@ class RemoteConnectionManager:
         local_script = os.path.join(local_dir, f"local_{script_id}.ps1")
 
         try:
-            # utf-8-sig adiciona o BOM para que o Windows PowerShell 5.1 interprete acentos UTF-8 nativamente
             with open(local_script, "w", encoding="utf-8-sig") as f:
                 f.write(script_content)
 
@@ -166,7 +241,6 @@ class RemoteConnectionManager:
             $cmd = "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -NoProfile -File {remote_ps1}"
             Invoke-WmiMethod -Path "Win32_Process" -Name "Create" -ArgumentList $cmd -ComputerName '{target_pc}' | Out-Null
             
-            # TIMEOUT DE 8 HORAS (28800 SEGS) PARA PERMITIR EXPURGOS DE DEZENAS/CENTENAS DE PERFIS
             $timeout = 28800
             $elapsed = 0
             $result = ""

@@ -464,13 +464,6 @@ class DashboardView(BaseView):
         self.btn_repair_agent.setStyleSheet("background-color: #1e8a5e; color: white; font-weight: bold; padding: 0 12px; border-radius: 4px;")
         self.btn_repair_agent.clicked.connect(self.action_repair_agent)
 
-        self.btn_net_diag = QPushButton("🌐 Rede")
-        self.btn_net_diag.setFixedHeight(32)
-        self.btn_net_diag.setToolTip("Diagnóstico de Conectividade (Zabbix/GLPI/SMB) e Reset de Cache DNS/ARP")
-        self.btn_net_diag.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_net_diag.setStyleSheet("background-color: #17a2b8; color: white; font-weight: bold; padding: 0 12px; border-radius: 4px;")
-        self.btn_net_diag.clicked.connect(self.action_network_diag)
-
         self.btn_wol = QPushButton("📡 WoL")
         self.btn_wol.setFixedHeight(32)
         self.btn_wol.setToolTip("Enviar pacote mágico Wake-on-LAN")
@@ -498,10 +491,9 @@ class DashboardView(BaseView):
 
         action_layout.addWidget(self.cmb_remote)
         action_layout.addWidget(self.btn_connect)
-        action_layout.addSpacing(4)
+        action_layout.addSpacing(6)
         action_layout.addWidget(self.cmb_agent_repair)
         action_layout.addWidget(self.btn_repair_agent)
-        action_layout.addWidget(self.btn_net_diag)
         action_layout.addStretch()
         action_layout.addWidget(self.btn_wol)
         action_layout.addWidget(self.btn_logoff)
@@ -853,64 +845,6 @@ class DashboardView(BaseView):
     def _on_desc_error(self, target_pc, error_msg):
         self.btn_edit_desc.setEnabled(True)
         QMessageBox.critical(self, "Erro ao Alterar Descrição", f"Não foi possível alterar a descrição em {target_pc}:\n\n{error_msg}")
-
-    def action_network_diag(self):
-        """Dispara o diagnóstico de conectividade HUL e/ou reset de cache de rede (DNS/ARP/NetBIOS)."""
-        target = self.inp_target.text().strip()
-        if not target:
-            QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
-            self.inp_target.setFocus()
-            return
-
-        opcoes = [
-            "1. Testar Conectividade (Gateway, Zabbix:10050, GLPI:443 e SMB:445)",
-            "2. Resetar Cache de Rede (DNS / ARP / NetBIOS) + Testar Conectividade"
-        ]
-        escolha, ok = QInputDialog.getItem(
-            self,
-            f"Diagnóstico & Reset de Rede — {target}",
-            "Selecione a operação desejada:",
-            opcoes,
-            0,
-            False
-        )
-        if not ok or not escolha:
-            return
-
-        mode = "reset_and_diag" if escolha.startswith("2.") else "diag_only"
-        try:
-            ps_script = load_ps_template("dashboard", "net_diag_reset", mode=mode)
-        except PsTemplateError as e:
-            QMessageBox.critical(self, "Erro Interno", f"Template ausente:\n{e}")
-            return
-
-        self.btn_net_diag.setEnabled(False)
-        self.btn_net_diag.setText("⏳ Rede...")
-
-        self.queue_manager.add_task(
-            target_pc=target,
-            script_name="Reset & Diagnóstico de Rede" if mode == "reset_and_diag" else "Diagnóstico de Rede",
-            script_content=ps_script,
-            module_name="[Dashboard] Rede",
-            on_finish=lambda t, s, d: self._on_net_diag_finished(t, d),
-            on_error=lambda t, e: self._on_net_diag_error(t, e)
-        )
-
-    def _on_net_diag_finished(self, target_pc, json_data):
-        self.btn_net_diag.setEnabled(True)
-        self.btn_net_diag.setText("🌐 Rede")
-        if isinstance(json_data, dict):
-            msg = json_data.get("Mensagem", "Concluído.")
-            detalhes = "\n".join(json_data.get("Detalhes", []))
-            texto = f"{msg}\n\n{detalhes}".strip()
-        else:
-            texto = "Diagnóstico concluído."
-        QMessageBox.information(self, f"Resultado de Rede — {target_pc}", texto)
-
-    def _on_net_diag_error(self, target_pc, error_msg):
-        self.btn_net_diag.setEnabled(True)
-        self.btn_net_diag.setText("🌐 Rede")
-        QMessageBox.critical(self, "Falha no Diagnóstico de Rede", f"Erro em {target_pc}:\n\n{error_msg}")
 
     def action_logoff_selected_table_user(self):
         """Faz logoff apenas do usuário selecionado na tabela do Dashboard."""

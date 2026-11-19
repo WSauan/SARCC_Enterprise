@@ -1,17 +1,20 @@
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QGroupBox,
     QMessageBox, QTextEdit, QFileDialog,
-    QSizePolicy, QListWidget, QListWidgetItem, QDialog
+    QSizePolicy, QListWidget, QListWidgetItem, QDialog,
+    QApplication
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
 from gui.dialogs.dialogs import CredentialDialog
 from core.credential_store import CredentialStore
+from core.remote_connection import RemoteConnectionManager
 from core.task_queue import TaskQueueManager
 from infrastructure.repositories.script_repository import ScriptRepository
 from domain.services.script_service import ScriptService
@@ -31,6 +34,36 @@ def parse_targets_string(raw_text: str) -> list[str]:
         if host:
             valid.append(host)
     return list(dict.fromkeys(valid))
+
+
+class BatchPingWorker(QThread):
+    """Testa conectividade de múltiplos alvos em paralelo sem travar a interface."""
+    finished = pyqtSignal(list, list)
+
+    def __init__(self, targets: list[str]):
+        super().__init__()
+        self.targets = targets
+
+    def run(self):
+        conn = RemoteConnectionManager()
+
+        def _check(host: str) -> tuple[str, bool]:
+            probe = conn.probe_host(host, port_timeout=0.7)
+            if probe["reachable"] or probe["ping_ok"]:
+                return host, True
+            return host, conn.ping_host(host, timeout_ms=500)
+
+        online = []
+        offline = []
+        workers = min(16, max(2, len(self.targets)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for host, is_up in pool.map(_check, self.targets):
+                if is_up:
+                    online.append(host)
+                else:
+                    offline.append(host)
+
+        self.finished.emit(online, offline)
 
 
 class ExecutionView(BaseView):
@@ -97,6 +130,13 @@ class ExecutionView(BaseView):
         self.target_input.setStyleSheet("padding: 0 10px;")
         self.target_input.textChanged.connect(self._force_uppercase)
 
+        self.btn_filter_online = QPushButton("📡 Filtrar Online (Ping)")
+        self.btn_filter_online.setFixedHeight(32)
+        self.btn_filter_online.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_filter_online.setToolTip("Testa os alvos em paralelo e mantém apenas os que respondem na rede")
+        self.btn_filter_online.setStyleSheet("background-color: #1e8a5e; color: white; padding: 0 14px; font-weight: bold; border-radius: 4px;")
+        self.btn_filter_online.clicked.connect(self.filter_online_targets)
+
         self.btn_import_targets = QPushButton("📂 Importar Lista (.txt)")
         self.btn_import_targets.setFixedHeight(32)
         self.btn_import_targets.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -111,6 +151,7 @@ class ExecutionView(BaseView):
 
         target_layout.addWidget(QLabel("IPs ou Hostnames:"))
         target_layout.addWidget(self.target_input, stretch=1)
+        target_layout.addWidget(self.btn_filter_online)
         target_layout.addWidget(self.btn_import_targets)
         target_layout.addWidget(self.btn_clear_targets)
 
@@ -252,6 +293,48 @@ class ExecutionView(BaseView):
 
         bottom_layout.addWidget(console_group, stretch=40)
         main_layout.addLayout(bottom_layout, stretch=1)
+
+    def filter_online_targets(self):
+        """Testa os alvos em paralelo e mantém no campo apenas os que respondem na rede."""
+        targets = self.get_targets()
+        if not targets:
+            return
+
+        self.btn_filter_online.setEnabled(False)
+        self.btn_filter_online.setText("⏳ Testando...")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+        self._ping_worker = BatchPingWorker(targets)
+        self._ping_worker.finished.connect(self._on_batch_ping_finished)
+        self._ping_worker.start()
+
+    def _on_batch_ping_finished(self, online: list[str], offline: list[str]):
+        QApplication.restoreOverrideCursor()
+        self.btn_filter_online.setEnabled(True)
+        self.btn_filter_online.setText("📡 Filtrar Online (Ping)")
+
+        self.target_input.setText(", ".join(online))
+
+        if offline:
+            copy_off = QMessageBox.question(
+                self,
+                "Filtro de Conectividade Concluído",
+                f"Online ({len(online)}): {', '.join(online[:6]) if online else 'Nenhum'}"
+                + (f" ... (+{len(online) - 6})" if len(online) > 6 else "")
+                + f"\nOffline / Sem resposta ({len(offline)}): {', '.join(offline[:6])}"
+                + (f" ... (+{len(offline) - 6})" if len(offline) > 6 else "")
+                + "\n\nA lista de alvos foi mantida apenas com os hosts online.\n"
+                "Deseja copiar a lista de hosts offline para a área de transferência?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if copy_off == QMessageBox.StandardButton.Yes:
+                QApplication.clipboard().setText("\n".join(offline))
+        else:
+            QMessageBox.information(
+                self,
+                "Filtro de Conectividade Concluído",
+                f"Todos os {len(online)} alvo(s) estão acessíveis na rede."
+            )
 
     def import_targets_from_file(self):
         file_path, _ = QFileDialog.getOpenFileName(

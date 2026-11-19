@@ -12,25 +12,26 @@ from core.ps_loader import load_ps_template, PsTemplateError
 from gui.views.base_view import BaseView
 from gui.views.software_view import fix_mojibake
 
-# Catálogo de atalhos de diagnóstico de rede
+# Catálogo de atalhos de diagnóstico e reset de rede
 NETWORK_SHORTCUTS = [
-    ("Ping Rápido (4 pacotes)",        "ping -n 4 8.8.8.8"),
-    ("Ping Contínuo (30 pacotes)",     "ping -n 30 8.8.8.8"),
-    ("Ping no Gateway Padrão",         "$gw = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop; if ($gw) { ping -n 4 $gw } else { Write-Output 'Gateway padrao nao encontrado' }"),
-    ("Tracert (rota até 8.8.8.8)",      "tracert -d -h 15 8.8.8.8"),
-    ("NSLookup (DNS A do alvo)",        "Resolve-DnsName -Name {target} -Type A -ErrorAction SilentlyContinue | Format-Table -AutoSize"),
-    ("Reverso (PTR do alvo)",           "Resolve-DnsName -Name {target} -Type PTR -ErrorAction SilentlyContinue | Format-Table -AutoSize"),
-    ("Test-NetConnection (WinRM 5985)", "Test-NetConnection -ComputerName localhost -Port 5985"),
-    ("Test-NetConnection (RDP 3389)",   "Test-NetConnection -ComputerName localhost -Port 3389"),
-    ("Config de Rede (IP/Gateway)",     "Get-NetIPConfiguration | Format-List"),
-    ("Servidores DNS Configurados",     "Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses } | Format-Table -AutoSize"),
-    ("Tabela de Rotas",                 "Get-NetRoute -AddressFamily IPv4 | Sort-Object RouteMetric | Format-Table -AutoSize"),
-    ("Conexões Ativas (ESTABLISHED)",   "netstat -ano | findstr ESTABLISHED | Select-Object -First 30"),
-    ("Portas em Escuta (LISTENING)",    "netstat -ano | findstr LISTENING | Select-Object -First 30"),
-    ("ARP (vizinhos de rede)",          "arp -a"),
-    ("Cache DNS Local",                 "Get-DnsClientCache | Select-Object -First 30 | Format-Table -AutoSize"),
-    ("Wi-Fi / Redes Visíveis",          "netsh wlan show networks mode=bssid 2>$null | Select-Object -First 40"),
-    ("Firewall (Perfis)",               "Get-NetFirewallProfile | Format-Table Name, Enabled, DefaultInboundAction -AutoSize"),
+    ("Resetar Rede (DNS / ARP / NetBIOS)", "ipconfig /flushdns; arp -d *; nbtstat -R; nbtstat -RR; ipconfig /registerdns; Write-Output 'Cache DNS, ARP e NetBIOS resetados com sucesso.'"),
+    ("Ping Rápido (4 pacotes)",              "ping -n 4 8.8.8.8"),
+    ("Ping Contínuo (30 pacotes)",           "ping -n 30 8.8.8.8"),
+    ("Ping no Gateway Padrão",               "$gw = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1).NextHop; if ($gw) { ping -n 4 $gw } else { Write-Output 'Gateway padrao nao encontrado' }"),
+    ("Tracert (rota até 8.8.8.8)",            "tracert -d -h 15 8.8.8.8"),
+    ("NSLookup (DNS A do alvo)",              "Resolve-DnsName -Name {target} -Type A -ErrorAction SilentlyContinue | Format-Table -AutoSize"),
+    ("Reverso (PTR do alvo)",                 "Resolve-DnsName -Name {target} -Type PTR -ErrorAction SilentlyContinue | Format-Table -AutoSize"),
+    ("Test-NetConnection (WinRM 5985)",       "Test-NetConnection -ComputerName localhost -Port 5985"),
+    ("Test-NetConnection (RDP 3389)",         "Test-NetConnection -ComputerName localhost -Port 3389"),
+    ("Config de Rede (IP/Gateway)",           "Get-NetIPConfiguration | Format-List"),
+    ("Servidores DNS Configurados",           "Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses } | Format-Table -AutoSize"),
+    ("Tabela de Rotas",                       "Get-NetRoute -AddressFamily IPv4 | Sort-Object RouteMetric | Format-Table -AutoSize"),
+    ("Conexões Ativas (ESTABLISHED)",         "netstat -ano | findstr ESTABLISHED | Select-Object -First 30"),
+    ("Portas em Escuta (LISTENING)",          "netstat -ano | findstr LISTENING | Select-Object -First 30"),
+    ("ARP (vizinhos de rede)",                "arp -a"),
+    ("Cache DNS Local",                       "Get-DnsClientCache | Select-Object -First 30 | Format-Table -AutoSize"),
+    ("Wi-Fi / Redes Visíveis",                "netsh wlan show networks mode=bssid 2>$null | Select-Object -First 40"),
+    ("Firewall (Perfis)",                     "Get-NetFirewallProfile | Format-Table Name, Enabled, DefaultInboundAction -AutoSize"),
 ]
 
 
@@ -111,7 +112,7 @@ class ShellView(BaseView):
         conn_group.setLayout(conn_layout)
         layout.addWidget(conn_group)
 
-        shortcut_group = QGroupBox("⚡ Atalhos de Diagnóstico de Rede")
+        shortcut_group = QGroupBox("⚡ Atalhos de Diagnóstico e Rede")
         shortcut_layout = QHBoxLayout(shortcut_group)
         shortcut_layout.setContentsMargins(15, 20, 15, 15)
         shortcut_layout.setSpacing(10)
