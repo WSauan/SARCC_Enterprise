@@ -18,7 +18,7 @@ from gui.views.software_view import fix_mojibake
 class LogTreeWidgetItem(QTreeWidgetItem):
     def __lt__(self, other):
         column = self.treeWidget().sortColumn()
-        if column in [1, 10]:
+        if column in [0, 10]:
             column = 3
 
         if column == 2:
@@ -146,7 +146,7 @@ class HistoryView(QWidget):
 
         layout.addLayout(header_layout)
 
-        filter_group = QGroupBox("Filtros de Pesquisa e Seleção")
+        filter_group = QGroupBox("Filtros de Pesquisa")
         control_bar = QHBoxLayout(filter_group)
         control_bar.setContentsMargins(15, 20, 15, 15)
         control_bar.setSpacing(10)
@@ -236,16 +236,24 @@ class HistoryView(QWidget):
         self.inp_search.textChanged.connect(self.apply_filters)
         control_bar.addWidget(self.inp_search, stretch=1)
 
-        self.chk_select_all = QCheckBox("Selecionar Visíveis")
-        self.chk_select_all.setFixedHeight(32)
-        self.chk_select_all.setStyleSheet("font-weight: bold; color: #4a90e2; margin-left: 10px;")
-        self.chk_select_all.stateChanged.connect(self.toggle_select_all)
-        control_bar.addWidget(self.chk_select_all)
-
         layout.addWidget(filter_group)
 
+        # Checkbox de seleção alinhado diretamente sobre a 1ª coluna ([✓]) da tabela
+        selection_bar = QHBoxLayout()
+        selection_bar.setContentsMargins(6, 0, 0, 0)
+        self.chk_select_all = QCheckBox("Selecionar Todos (Visíveis)")
+        self.chk_select_all.setFixedHeight(24)
+        self.chk_select_all.setStyleSheet("font-weight: bold; color: #4a90e2;")
+        self.chk_select_all.stateChanged.connect(self.toggle_select_all)
+        selection_bar.addWidget(self.chk_select_all)
+        selection_bar.addStretch()
+        layout.addLayout(selection_bar)
+
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Alvo (Computador)", "[✓]", "ID", "Início", "Fim", "Tempo", "Módulo", "Ação / Script", "Técnico", "Status", "Ações"])
+        self.tree.setHeaderLabels([
+            "[✓]", "Alvo (Computador)", "ID", "Início", "Fim", "Tempo",
+            "Módulo", "Ação / Script", "Técnico", "Status", "Ações"
+        ])
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.tree.setSortingEnabled(True)
@@ -253,8 +261,8 @@ class HistoryView(QWidget):
 
         header = self.tree.header()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(0, 180)
-        header.resizeSection(1, 35)
+        header.resizeSection(0, 38)
+        header.resizeSection(1, 180)
         header.resizeSection(2, 50)
         header.resizeSection(3, 140)
         header.resizeSection(4, 140)
@@ -307,8 +315,12 @@ class HistoryView(QWidget):
         return format_duration(seconds)
 
     def on_header_clicked(self, logical_index):
-        if logical_index in [1, 10]:
+        # Coluna 0 ([✓]) e Coluna 10 (Ações) não possuem ordenação
+        if logical_index in [0, 10]:
+            self.tree.sortItems(self.sort_col, self.sort_order)
+            self.tree.header().setSortIndicator(self.sort_col, self.sort_order)
             return
+
         if self.sort_col == logical_index:
             self.sort_order = Qt.SortOrder.DescendingOrder if self.sort_order == Qt.SortOrder.AscendingOrder else Qt.SortOrder.AscendingOrder
         else:
@@ -318,7 +330,7 @@ class HistoryView(QWidget):
         self.tree.header().setSortIndicator(self.sort_col, self.sort_order)
 
     def on_item_double_clicked(self, item, column):
-        if item is not None and column != 1:
+        if item is not None and column != 0:
             json_data = item.data(10, Qt.ItemDataRole.UserRole)
             if json_data:
                 self.show_details(json_data)
@@ -347,7 +359,7 @@ class HistoryView(QWidget):
                     match = False
 
             if match and search_text:
-                row_text = f"{item.text(0)} {item.text(6)} {item.text(7)} {item.text(8)}".lower()
+                row_text = f"{item.text(1)} {item.text(6)} {item.text(7)} {item.text(8)}".lower()
                 if search_text not in row_text:
                     match = False
 
@@ -402,13 +414,13 @@ class HistoryView(QWidget):
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
             if not item.isHidden():
-                item.setCheckState(1, Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
+                item.setCheckState(0, Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
 
     def get_selected_ids(self):
         selected_ids = []
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
-            if not item.isHidden() and item.checkState(1) == Qt.CheckState.Checked:
+            if not item.isHidden() and item.checkState(0) == Qt.CheckState.Checked:
                 selected_ids.append(int(item.text(2)))
         return selected_ids
 
@@ -469,7 +481,7 @@ class HistoryView(QWidget):
             raw_seconds = metrics["seconds"]
 
             child_item = LogTreeWidgetItem(self.tree, [
-                f"🖥️ {pc}", "", str(log_id), inicio_str, fim_str, duracao_str,
+                "", f"🖥️ {pc}", str(log_id), inicio_str, fim_str, duracao_str,
                 str(module), str(script_name), str(technician), str(status), ""
             ])
 
@@ -481,7 +493,7 @@ class HistoryView(QWidget):
             elif "ALERTA" in status_up:
                 child_item.setForeground(9, Qt.GlobalColor.darkYellow)
 
-            child_item.setCheckState(1, Qt.CheckState.Unchecked)
+            child_item.setCheckState(0, Qt.CheckState.Unchecked)
             child_item.setData(5, Qt.ItemDataRole.UserRole, raw_seconds)
             child_item.setData(10, Qt.ItemDataRole.UserRole, result_data)
 
@@ -501,6 +513,7 @@ class HistoryView(QWidget):
 
         self.tree.setSortingEnabled(True)
         self.tree.sortItems(self.sort_col, self.sort_order)
+        self.tree.header().setSortIndicator(self.sort_col, self.sort_order)
         self.apply_filters()
 
     def exportar_txt(self):

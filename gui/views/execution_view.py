@@ -1,4 +1,5 @@
 import ipaddress
+import json
 import os
 import re
 import socket
@@ -103,6 +104,7 @@ class HostDiscoveryWorker(QThread):
         self.mode = mode
         self.query = query
         self.subnet_filter = subnet_filter
+        self.is_cancelled = False
 
     def _query_ad_computers(self, name_filter: str) -> list[dict]:
         """Consulta computadores no AD (Nome e, quando disponível, IPv4)."""
@@ -125,9 +127,10 @@ class HostDiscoveryWorker(QThread):
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
                 capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW
             )
+            if self.is_cancelled:
+                return []
             raw_out = (proc.stdout or "").strip()
             if raw_out:
-                import json
                 parsed = json.loads(raw_out)
                 items = parsed if isinstance(parsed, list) else [parsed]
                 for item in items:
@@ -148,11 +151,16 @@ class HostDiscoveryWorker(QThread):
         if self.mode == "subnet":
             ips = expand_subnet_range(self.query)
             if not ips:
-                self.finished.emit([], {}, "Informe uma sub-rede válida (ex: 10.8.128.0/24 ou 10.8.128.1-30).")
+                if not self.is_cancelled:
+                    self.finished.emit([], {}, "Informe uma sub-rede válida (ex: 10.8.128.0/24 ou 10.8.128.1-30).")
                 return
 
             def _probe_and_resolve(ip_str: str):
+                if self.is_cancelled:
+                    return None
                 probe = conn.probe_host(ip_str, port_timeout=0.35)
+                if self.is_cancelled:
+                    return None
                 if probe["reachable"] or probe["ping_ok"]:
                     resolved_name = _resolve_hostname_for_ip(ip_str)
                     return resolved_name, ip_str
@@ -161,23 +169,31 @@ class HostDiscoveryWorker(QThread):
             workers = min(24, max(4, len(ips)))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 for res in pool.map(_probe_and_resolve, ips):
+                    if self.is_cancelled:
+                        return
                     if res:
                         h_name, h_ip = res
                         host_to_ip[h_name] = h_ip
                         if h_name not in ordered_targets:
                             ordered_targets.append(h_name)
 
-            self.finished.emit(ordered_targets, host_to_ip, "")
+            if not self.is_cancelled:
+                self.finished.emit(ordered_targets, host_to_ip, "")
             return
 
         ad_records = self._query_ad_computers(self.query or "*")
+        if self.is_cancelled:
+            return
 
         if self.mode == "ad_subnet":
             if not self.subnet_filter.strip():
-                self.finished.emit([], {}, "Informe a sub-rede para filtrar os computadores do AD.")
+                if not self.is_cancelled:
+                    self.finished.emit([], {}, "Informe a sub-rede para filtrar os computadores do AD.")
                 return
 
             def _match_ad_in_subnet(rec: dict):
+                if self.is_cancelled:
+                    return None
                 name = rec["name"]
                 ip = rec.get("ip", "")
                 if not ip:
@@ -192,24 +208,29 @@ class HostDiscoveryWorker(QThread):
             workers = min(16, max(2, len(ad_records)))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 for res in pool.map(_match_ad_in_subnet, ad_records):
+                    if self.is_cancelled:
+                        return
                     if res:
                         h_name, h_ip = res
                         host_to_ip[h_name] = h_ip
                         if h_name not in ordered_targets:
                             ordered_targets.append(h_name)
 
-            self.finished.emit(ordered_targets, host_to_ip, "")
+            if not self.is_cancelled:
+                self.finished.emit(ordered_targets, host_to_ip, "")
             return
 
-        # Modo AD padrão: prioriza sempre o nome do computador e guarda o IP se já vier do AD
         for rec in ad_records:
+            if self.is_cancelled:
+                return
             h_name = rec["name"]
             if rec.get("ip"):
                 host_to_ip[h_name] = rec["ip"]
             if h_name not in ordered_targets:
                 ordered_targets.append(h_name)
 
-        self.finished.emit(ordered_targets, host_to_ip, "")
+        if not self.is_cancelled:
+            self.finished.emit(ordered_targets, host_to_ip, "")
 
 
 class BatchPingWorker(QThread):
@@ -286,6 +307,7 @@ class ExecutionView(BaseView):
         self.script_repo = ScriptRepository()
         self.script_service = ScriptService(self.script_repo)
         self.discovered_host_ips: dict[str, str] = {}
+        self.is_discovering = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -479,8 +501,27 @@ class ExecutionView(BaseView):
         bottom_layout.addWidget(console_group, stretch=40)
         main_layout.addLayout(bottom_layout, stretch=1)
 
+    def _reset_discover_button(self):
+        self.is_discovering = False
+        try:
+            QApplication.restoreOverrideCursor()
+        except Exception:
+            pass
+        self.btn_discover_targets.setEnabled(True)
+        self.btn_discover_targets.setText("🔎 Descobrir Alvos")
+        self.btn_discover_targets.setStyleSheet(
+            "background-color: #4a90e2; color: white; padding: 0 14px; font-weight: bold; border-radius: 4px;"
+        )
+
     def discover_targets(self):
-        """Descobre computadores por sub-rede (resolvendo nome), no AD ou combinando AD + Sub-rede."""
+        """Inicia ou cancela a descoberta por sub-rede, AD ou AD + Sub-rede."""
+        if getattr(self, "is_discovering", False):
+            worker = getattr(self, "_discovery_worker", None)
+            if worker and worker.isRunning():
+                worker.is_cancelled = True
+            self._reset_discover_button()
+            return
+
         opcoes = [
             "1. Consultar Active Directory (padrão ex: HUL-WK-* ou *)",
             "2. Varredura de Sub-rede (resolve nome do host quando possível)",
@@ -530,8 +571,12 @@ class ExecutionView(BaseView):
         if not ok_p or not param.strip():
             return
 
-        self.btn_discover_targets.setEnabled(False)
-        self.btn_discover_targets.setText("⏳ Descobrindo...")
+        self.is_discovering = True
+        self.btn_discover_targets.setEnabled(True)
+        self.btn_discover_targets.setText("⛔ Cancelar Descoberta")
+        self.btn_discover_targets.setStyleSheet(
+            "background-color: #d9534f; color: white; padding: 0 14px; font-weight: bold; border-radius: 4px;"
+        )
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
         self._discovery_worker = HostDiscoveryWorker(
@@ -541,9 +586,12 @@ class ExecutionView(BaseView):
         self._discovery_worker.start()
 
     def _on_discovery_finished(self, found: list[str], host_ip_map: dict, err_msg: str):
-        QApplication.restoreOverrideCursor()
-        self.btn_discover_targets.setEnabled(True)
-        self.btn_discover_targets.setText("🔎 Descobrir Alvos")
+        worker = getattr(self, "_discovery_worker", None)
+        if worker and getattr(worker, "is_cancelled", False):
+            self._reset_discover_button()
+            return
+
+        self._reset_discover_button()
 
         if err_msg:
             QMessageBox.warning(self, "Aviso", err_msg)
