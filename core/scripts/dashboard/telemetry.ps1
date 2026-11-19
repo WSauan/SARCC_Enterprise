@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Telemetria Ultra-Rápida para o Dashboard com Inventário Físico, S.M.A.R.T., Slots de RAM e Perfis TEMP*.
+    Telemetria Ultra-Rápida para o Dashboard com Inventário Físico, S.M.A.R.T., Slots de RAM, Sessões Reais (quser) e Perfis TEMP*.
 #>
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
@@ -49,9 +49,64 @@ if ($diskSmartStr -eq "N/A") {
     }
 }
 
-# 2. Perfis e Sessões (Híbrido: Win32_UserProfile + Pastas Físicas em C:\Users)
+# 2. Mapeamento de Sessões Reais (quser: Ativo vs Desconectado em 2º plano)
+$sessionMap = @{}
+try {
+    $quserLines = @(& quser.exe 2>$null)
+    if ($quserLines.Count -gt 1) {
+        for ($i = 1; $i -lt $quserLines.Count; $i++) {
+            $cleanLine = $quserLines[$i].Trim() -replace '^>', ''
+            if ([string]::IsNullOrWhiteSpace($cleanLine)) { continue }
+            $tokens = @($cleanLine -split '\s+')
+            if ($tokens.Count -lt 3) { continue }
+
+            $uName = $tokens[0].ToLower()
+            $sessId = $null
+            $sessState = "Desconectado"
+
+            # Quando desconectado, SESSIONNAME fica vazio e o ID numérico passa a ser o índice 1
+            if ($tokens[1] -match '^\d+$') {
+                $sessId = [int]$tokens[1]
+                $rawState = $tokens[2]
+                $sessState = if ($rawState -match '^(?i)(Ativo|Active)$') { "Ativo" } else { "Desconectado" }
+            } elseif ($tokens[2] -match '^\d+$') {
+                $sessId = [int]$tokens[2]
+                $rawState = if ($tokens.Count -gt 3) { $tokens[3] } else { "Ativo" }
+                $sessState = if ($rawState -match '(?i)(Desc|Disc)') { "Desconectado" } else { "Ativo" }
+            }
+
+            if ($null -ne $sessId) {
+                $sessionMap[$uName] = @{
+                    Id    = $sessId
+                    State = $sessState
+                }
+            }
+        }
+    }
+} catch { }
+
+function Resolve-UserSession([string]$ProfileName, [bool]$HiveLoaded) {
+    $low = $ProfileName.ToLower()
+    if ($sessionMap.ContainsKey($low)) {
+        return $sessionMap[$low]
+    }
+    # Fallback para nomes de usuário > 20 caracteres truncados pelo quser.exe
+    foreach ($k in $sessionMap.Keys) {
+        if ($k.Length -ge 19 -and $low.StartsWith($k)) {
+            return $sessionMap[$k]
+        }
+    }
+    if ($HiveLoaded) {
+        return @{ Id = $null; State = "Carregado" }
+    }
+    return @{ Id = $null; State = "" }
+}
+
+# 3. Perfis e Sessões (Híbrido: Win32_UserProfile + Pastas Físicas em C:\Users)
 $profilesList = @()
 $loggedNames = @()
+$activeUsersCount = 0
+$disconnectedUsersCount = 0
 $seenNames = @{}
 $ignoredFolders = @(
     'public', 'público', 'publico',
@@ -93,17 +148,27 @@ foreach ($p in $profilesRaw) {
 
     $isLoaded = [bool]$p.Loaded
     $isTemp = [bool]($name -match '^(?i)TEMP(\.|$)')
+    $sessInfo = Resolve-UserSession -ProfileName $name -HiveLoaded $isLoaded
+    $sState = if ($sessInfo.State) { $sessInfo.State } elseif ($isTemp) { "Temp" } else { "Inativo" }
+
+    if ($sState -eq "Ativo") {
+        $activeUsersCount++
+        $loggedNames += $name
+        $isLoaded = $true
+    } elseif ($sState -eq "Desconectado" -or $sState -eq "Carregado") {
+        $disconnectedUsersCount++
+        $loggedNames += $name
+        $isLoaded = $true
+    }
 
     $seenNames[$nameLower] = $true
     $profilesList += [PSCustomObject]@{
-        Name    = $name
-        LastUse = $lastUseStr
-        Loaded  = $isLoaded
-        IsTemp  = $isTemp
-    }
-
-    if ($isLoaded) {
-        $loggedNames += $name
+        Name         = $name
+        LastUse      = $lastUseStr
+        Loaded       = $isLoaded
+        IsTemp       = $isTemp
+        SessionState = $sState
+        SessionId    = $sessInfo.Id
     }
 }
 
@@ -125,11 +190,20 @@ if (Test-Path -LiteralPath $usersRoot) {
         $isTempFolder = [bool]($fName -match '^(?i)TEMP(\.|$)')
         $fLastUse = if ($folder.LastWriteTime) { $folder.LastWriteTime.ToString('yyyy-MM-dd HH:mm') } else { "N/A" }
 
+        $sessInfo = Resolve-UserSession -ProfileName $fName -HiveLoaded $false
+        $sState = if ($sessInfo.State) { $sessInfo.State } elseif ($isTempFolder) { "Temp" } else { "Inativo" }
+        $hasSession = ($sState -in @("Ativo", "Desconectado", "Carregado"))
+
+        if ($sState -eq "Ativo") { $activeUsersCount++; $loggedNames += $fName }
+        elseif ($hasSession) { $disconnectedUsersCount++; $loggedNames += $fName }
+
         $profilesList += [PSCustomObject]@{
-            Name    = $fName
-            LastUse = $fLastUse
-            Loaded  = $false
-            IsTemp  = $isTempFolder
+            Name         = $fName
+            LastUse      = $fLastUse
+            Loaded       = $hasSession
+            IsTemp       = $isTempFolder
+            SessionState = $sState
+            SessionId    = $sessInfo.Id
         }
     }
 }
@@ -139,7 +213,7 @@ $normalProfilesCount = @($profilesList | Where-Object { $_.IsTemp -eq $false }).
 $profiles = $profilesList.Count
 $loggedUsers = $loggedNames.Count
 
-# 3. OS, Descrição (Local/Setor) e Rede
+# 4. OS, Descrição (Local/Setor) e Rede
 $os = Get-CimInstance Win32_OperatingSystem -Property Caption, Description, LastBootUpTime, TotalVisibleMemorySize, FreePhysicalMemory -ErrorAction SilentlyContinue
 $uptimeStr = "N/A"
 if ($os -and $os.LastBootUpTime) {
@@ -152,7 +226,7 @@ $net = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled = 'T
 $ip = if ($net -and $net.IPAddress) { $net.IPAddress[0] } else { "N/A" }
 $mac = if ($net -and $net.MACAddress) { $net.MACAddress } else { "N/A" }
 
-# 4. Hardware Físico (Modelo, BIOS Serial, CPU e Topologia RAM)
+# 5. Hardware Físico (Modelo, BIOS Serial, CPU e Topologia RAM)
 $cs = Get-CimInstance Win32_ComputerSystem -Property Manufacturer, Model -ErrorAction SilentlyContinue
 $bios = Get-CimInstance Win32_BIOS -Property SerialNumber -ErrorAction SilentlyContinue
 $hwModel = "N/A"
@@ -193,7 +267,7 @@ try {
     }
 } catch { }
 
-# 5. Segurança
+# 6. Segurança
 $av = "Windows Defender (Nativo)"
 $avInfo = Get-CimInstance -Namespace "root\SecurityCenter2" -ClassName "AntivirusProduct" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($avInfo -and $avInfo.displayName) { $av = $avInfo.displayName }
@@ -202,7 +276,7 @@ $actStatus = "Não Ativado"
 $sl = Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL" -ErrorAction SilentlyContinue | Where-Object { $_.ApplicationId -eq '55c92734-d682-4d71-983e-d6ec3f16059f' } | Select-Object -First 1
 if ($sl -and $sl.LicenseStatus -eq 1) { $actStatus = "Ativado (Licenciado)" }
 
-# 6. Agentes
+# 7. Agentes
 $rdpReg = Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -ErrorAction SilentlyContinue
 $rdpStatus = if ($null -ne $rdpReg -and $rdpReg.fDenyTSConnections -eq 0) { "Ativado" } else { "Desativado" }
 
@@ -236,7 +310,7 @@ $glpiStatus = if ($glpiSvc) { if ($glpiSvc.Status.ToString() -eq 'Running') { "A
 
 $dinfoStatus = if (Get-Process -Name "DesktopInfo*" -ErrorAction SilentlyContinue | Select-Object -First 1) { "Ativo (Rodando)" } else { "Parado / Não Instalado" }
 
-# 7. Winget
+# 8. Winget
 $wingetStatus = "Não Instalado"
 $wingetExe = $null
 $realApp = Get-ChildItem "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -259,7 +333,7 @@ if ($wingetExe) {
     }
 }
 
-# 8. Reboot Pendente
+# 9. Reboot Pendente
 $rebootPending = $false
 $rebootReasons = @()
 
@@ -273,42 +347,44 @@ $rebootStatus = if ($rebootPending) { "Pendente (" + ($rebootReasons -join ", ")
 
 # Resultado
 [PSCustomObject]@{
-    HostName            = $env:COMPUTERNAME
-    ComputerDesc        = $compDesc
-    HardwareModel       = $hwModel
-    SerialNumber        = $serialNum
-    OSVersion           = if ($os) { $os.Caption } else { "N/A" }
-    Activation          = $actStatus
-    CPUModel            = $cpuModel
-    CPUUsage            = if ($cpu) { $cpu.LoadPercentage } else { 0 }
-    CPUTemp             = $cpuTempStr
-    TotalRAM            = $totalRamGB
-    UsedRAM             = $usedRamGB
-    RAMPct              = $ramPct
-    RAMSlots            = $ramSlotsStr
-    AVProduct           = $av
-    DiskTotal           = $total
-    DiskFree            = $free
-    DiskUsed            = $used
-    DiskPct             = $pct
-    DiskType            = $diskTypeStr
-    DiskSmart           = $diskSmartStr
-    ProfilesCount       = $profiles
-    NormalProfilesCount = $normalProfilesCount
-    TempProfilesCount   = $tempProfilesCount
-    LoggedUsers         = $loggedUsers
-    ProfilesList        = @($profilesList)
-    LoggedNames         = @($loggedNames)
-    IP                  = $ip
-    MAC                 = $mac
-    Uptime              = $uptimeStr
-    RDP                 = $rdpStatus
-    VNC                 = $vncStatus
-    WOL                 = $wolStatus
-    AnyDesk             = $anydeskId
-    Zabbix              = $zabbixStatus
-    GLPI                = $glpiStatus
-    DesktopInfo         = $dinfoStatus
-    Winget              = $wingetStatus
-    RebootPending       = $rebootStatus
+    HostName               = $env:COMPUTERNAME
+    ComputerDesc           = $compDesc
+    HardwareModel          = $hwModel
+    SerialNumber           = $serialNum
+    OSVersion              = if ($os) { $os.Caption } else { "N/A" }
+    Activation             = $actStatus
+    CPUModel               = $cpuModel
+    CPUUsage               = if ($cpu) { $cpu.LoadPercentage } else { 0 }
+    CPUTemp                = $cpuTempStr
+    TotalRAM               = $totalRamGB
+    UsedRAM                = $usedRamGB
+    RAMPct                 = $ramPct
+    RAMSlots               = $ramSlotsStr
+    AVProduct              = $av
+    DiskTotal              = $total
+    DiskFree               = $free
+    DiskUsed               = $used
+    DiskPct                = $pct
+    DiskType               = $diskTypeStr
+    DiskSmart              = $diskSmartStr
+    ProfilesCount          = $profiles
+    NormalProfilesCount    = $normalProfilesCount
+    TempProfilesCount      = $tempProfilesCount
+    LoggedUsers            = $loggedUsers
+    ActiveUsersCount       = $activeUsersCount
+    DisconnectedUsersCount = $disconnectedUsersCount
+    ProfilesList           = @($profilesList)
+    LoggedNames            = @($loggedNames)
+    IP                     = $ip
+    MAC                    = $mac
+    Uptime                 = $uptimeStr
+    RDP                    = $rdpStatus
+    VNC                    = $vncStatus
+    WOL                    = $wolStatus
+    AnyDesk                = $anydeskId
+    Zabbix                 = $zabbixStatus
+    GLPI                   = $glpiStatus
+    DesktopInfo            = $dinfoStatus
+    Winget                 = $wingetStatus
+    RebootPending          = $rebootStatus
 } | ConvertTo-Json -Depth 4 -Compress

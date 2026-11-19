@@ -3,12 +3,14 @@ import shutil
 import subprocess
 import socket
 import time
+import base64
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QGroupBox,
     QGridLayout, QComboBox, QMessageBox, QProgressBar, QScrollArea, QInputDialog,
-    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QApplication
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QApplication,
+    QMenu
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
@@ -50,16 +52,54 @@ def _is_temp_profile(profile_dict: dict) -> bool:
     return name == "TEMP" or name.startswith("TEMP.")
 
 
+def format_profile_session_status(profile_dict: dict, logged_names: set = None) -> tuple[str, Qt.GlobalColor | None, bool]:
+    """
+    Retorna (texto_status, cor_qt, pode_fazer_logoff) diferenciando:
+    - Ativo (sessão ativa no console/RDP)
+    - Desconectado (sessão aberta em 2º plano consumindo recursos)
+    - Em 2º Plano (hive carregada)
+    - Temp / Órfão
+    - Inativo
+    """
+    logged_names = logged_names or set()
+    name = str(profile_dict.get("Name", "?"))
+    state = str(profile_dict.get("SessionState", "") or "").strip()
+    sess_id = profile_dict.get("SessionId")
+    is_temp = _is_temp_profile(profile_dict)
+    is_loaded = bool(profile_dict.get("Loaded")) or (name in logged_names)
+
+    id_suffix = f" (ID {sess_id})" if sess_id is not None and str(sess_id).isdigit() else ""
+
+    if state.lower() == "ativo":
+        return f"🟢 Ativo{id_suffix}", Qt.GlobalColor.green, True
+    if state.lower() == "desconectado":
+        return f"🟡 Desconectado{id_suffix}", Qt.GlobalColor.yellow, True
+    if state.lower() == "carregado":
+        return "🔵 Em 2º Plano", Qt.GlobalColor.cyan, True
+    if is_loaded and not state:
+        return f"🟢 Logado{id_suffix}", Qt.GlobalColor.green, True
+    if is_temp:
+        return "🟠 Temp / Órfão", Qt.GlobalColor.yellow, False
+    return "⚪ Inativo", None, False
+
+
 def _sort_profiles(profiles: list, logged_names: set) -> list:
-    """Ordena: 1º Logados, 2º Normais por acesso mais recente, 3º Perfis TEMP*."""
+    """Ordena: 1º Ativos, 2º Desconectados/2º Plano, 3º Normais por data, 4º Perfis TEMP*."""
     def sort_key(p):
         name = p.get("Name", "")
-        is_logged = 1 if name in logged_names else 0
+        state = str(p.get("SessionState", "") or "").lower()
+        if state == "ativo":
+            rank_session = 3
+        elif state in ("desconectado", "carregado") or name in logged_names or p.get("Loaded"):
+            rank_session = 2
+        else:
+            rank_session = 0
+
         is_normal = 0 if _is_temp_profile(p) else 1
         last_use = p.get("LastUse", "") or ""
         if last_use == "N/A":
             last_use = ""
-        return (is_logged, is_normal, last_use)
+        return (rank_session, is_normal, last_use)
 
     return sorted(profiles, key=sort_key, reverse=True)
 
@@ -80,15 +120,25 @@ def format_smart_badge(disk_type: str, smart_status: str) -> str:
     return f"[{dtype}] S.M.A.R.T.: <span style='color: {color}; font-weight: bold;'>{smart}</span>"
 
 
-class ProfilesDialog(QDialog):
-    """Lista completa de perfis de utilizador (Normais + Temporários) do endpoint alvo."""
+def _activate_header_click_sort(table: QTableWidget, col: int):
+    """Ativa ordenação sob demanda quando o usuário clica manualmente no cabeçalho."""
+    if not table.isSortingEnabled():
+        table.horizontalHeader().setSortIndicatorShown(True)
+        table.setSortingEnabled(True)
+        table.sortItems(col, Qt.SortOrder.AscendingOrder)
 
-    def __init__(self, profiles: list, logged_names: set, target_pc: str, parent=None):
+
+class ProfilesDialog(QDialog):
+    """Lista completa de perfis de utilizador (Normais + Temporários + Sessões em 2º plano) do endpoint alvo."""
+
+    def __init__(self, profiles: list, logged_names: set, target_pc: str, on_logoff_callback=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Perfis de Usuário — {target_pc}")
-        self.resize(620, 500)
+        self.setWindowTitle(f"Perfis e Sessões de Usuário — {target_pc}")
+        self.resize(700, 520)
         self.all_profiles = profiles
         self.logged_names = logged_names
+        self.target_pc = target_pc
+        self.on_logoff_callback = on_logoff_callback
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -96,13 +146,19 @@ class ProfilesDialog(QDialog):
 
         temp_count = sum(1 for p in profiles if _is_temp_profile(p))
         normal_count = len(profiles) - temp_count
+        active_count = sum(1 for p in profiles if str(p.get("SessionState", "")).lower() == "ativo")
+        disc_count = sum(
+            1 for p in profiles
+            if str(p.get("SessionState", "")).lower() in ("desconectado", "carregado")
+        )
 
         header_layout = QHBoxLayout()
         info = QLabel(
             f"<b>Total: {len(profiles)}</b> &nbsp;|&nbsp; "
             f"Normais: <b>{normal_count}</b> &nbsp;|&nbsp; "
-            f"<span style='color: #f0ad4e;'>Temporários (TEMP*): <b>{temp_count}</b></span> &nbsp;|&nbsp; "
-            f"<span style='color: #4CAF50;'>Logados: <b>{len(logged_names)}</b></span>"
+            f"<span style='color: #f0ad4e;'>TEMP*: <b>{temp_count}</b></span> &nbsp;|&nbsp; "
+            f"<span style='color: #4CAF50;'>Ativos: <b>{active_count}</b></span> &nbsp;|&nbsp; "
+            f"<span style='color: #ffd700;'>Desconectados (2º Plano): <b>{disc_count}</b></span>"
         )
         info.setStyleSheet("font-size: 13px;")
         header_layout.addWidget(info)
@@ -115,16 +171,36 @@ class ProfilesDialog(QDialog):
         layout.addLayout(header_layout)
 
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Usuário / Pasta", "Último Acesso", "Status"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setHorizontalHeaderLabels(["Usuário / Pasta", "Último Acesso", "Status da Sessão"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().resizeSection(0, 260)
+        self.table.horizontalHeader().resizeSection(1, 160)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSortIndicatorShown(False)
+        self.table.horizontalHeader().sectionClicked.connect(
+            lambda col: _activate_header_click_sort(self.table, col)
+        )
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
 
         self._populate()
         layout.addWidget(self.table)
+
+        btn_layout = QHBoxLayout()
+        self.btn_logoff_sel = QPushButton("🚪 Fazer Logoff do Usuário Selecionado")
+        self.btn_logoff_sel.setFixedHeight(32)
+        self.btn_logoff_sel.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_logoff_sel.setStyleSheet(
+            "padding: 0 16px; background-color: #f0ad4e; color: black; "
+            "font-weight: bold; border-radius: 4px;"
+        )
+        self.btn_logoff_sel.clicked.connect(self._logoff_selected)
+        btn_layout.addWidget(self.btn_logoff_sel)
+
+        btn_layout.addStretch()
 
         btn_close = QPushButton("Fechar")
         btn_close.setFixedHeight(32)
@@ -134,14 +210,12 @@ class ProfilesDialog(QDialog):
             "font-weight: bold; border-radius: 4px;"
         )
         btn_close.clicked.connect(self.close)
-
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
         btn_layout.addWidget(btn_close)
         layout.addLayout(btn_layout)
 
     def _populate(self):
         self.table.setSortingEnabled(False)
+        self.table.horizontalHeader().setSortIndicatorShown(False)
         self.table.setRowCount(0)
 
         profiles_sorted = _sort_profiles(self.all_profiles, self.logged_names)
@@ -151,35 +225,69 @@ class ProfilesDialog(QDialog):
             self.table.insertRow(row)
 
             name = p.get("Name", "?")
-            is_temp = _is_temp_profile(p)
-            is_logged = name in self.logged_names
 
             name_item = QTableWidgetItem(name)
-            name_item.setData(Qt.ItemDataRole.UserRole, is_temp)
+            name_item.setData(Qt.ItemDataRole.UserRole, p)
             self.table.setItem(row, 0, name_item)
 
             last_use_item = QTableWidgetItem(_format_last_use(p.get("LastUse", "N/A")))
             last_use_item.setData(Qt.ItemDataRole.UserRole, p.get("LastUse", ""))
             self.table.setItem(row, 1, last_use_item)
 
-            if is_logged:
-                status_item = QTableWidgetItem("🟢 Logado")
-                status_item.setForeground(Qt.GlobalColor.green)
-            elif is_temp:
-                status_item = QTableWidgetItem("🟠 Temp / Órfão")
-                status_item.setForeground(Qt.GlobalColor.yellow)
-            else:
-                status_item = QTableWidgetItem("⚪ Inativo")
+            status_text, color, _ = format_profile_session_status(p, self.logged_names)
+            status_item = QTableWidgetItem(status_text)
+            if color is not None:
+                status_item.setForeground(color)
             self.table.setItem(row, 2, status_item)
-
-        self.table.setSortingEnabled(True)
 
     def _apply_filter(self):
         hide_temp = self.chk_hide_temp.isChecked()
         for r in range(self.table.rowCount()):
             item = self.table.item(r, 0)
-            is_temp = bool(item.data(Qt.ItemDataRole.UserRole)) if item else False
+            p_data = item.data(Qt.ItemDataRole.UserRole) if item else {}
+            is_temp = _is_temp_profile(p_data)
             self.table.setRowHidden(r, hide_temp and is_temp)
+
+    def _logoff_selected(self):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Aviso", "Selecione um usuário na tabela.")
+            return
+        item = self.table.item(row, 0)
+        p_data = item.data(Qt.ItemDataRole.UserRole) if item else {}
+        _, _, can_logoff = format_profile_session_status(p_data, self.logged_names)
+        if not can_logoff:
+            QMessageBox.information(
+                self, "Sessão Inativa",
+                f"O perfil '{p_data.get('Name', '')}' não está com sessão aberta no momento."
+            )
+            return
+        if self.on_logoff_callback:
+            self.on_logoff_callback(p_data.get("Name", ""), p_data.get("SessionId"))
+            self.close()
+
+    def _show_context_menu(self, pos):
+        item = self.table.itemAt(pos)
+        if not item:
+            return
+        row = item.row()
+        name_item = self.table.item(row, 0)
+        p_data = name_item.data(Qt.ItemDataRole.UserRole) if name_item else {}
+        username = p_data.get("Name", "")
+        _, _, can_logoff = format_profile_session_status(p_data, self.logged_names)
+
+        menu = QMenu(self)
+        act_copy = menu.addAction(f"📋 Copiar usuário '{username}'")
+        act_logoff = None
+        if can_logoff:
+            act_logoff = menu.addAction(f"🚪 Fazer Logoff apenas de '{username}'")
+
+        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if chosen == act_copy:
+            QApplication.clipboard().setText(username)
+        elif act_logoff and chosen == act_logoff and self.on_logoff_callback:
+            self.on_logoff_callback(username, p_data.get("SessionId"))
+            self.close()
 
 
 class PingTrackerWorker(QThread):
@@ -248,7 +356,12 @@ class DashboardView(BaseView):
         self.exec_repo = exec_repo or ExecutionRepository()
         self.is_fetching = False
         self._last_anydesk_id = ""
+        self._last_computer_desc = ""
         self._setup_ui()
+
+    @staticmethod
+    def _b64(text: str) -> str:
+        return base64.b64encode(str(text or "").encode("utf-8")).decode("ascii")
 
     def _get_credentials(self):
         """Retorna credenciais — cache → disco (DPAPI) → popup."""
@@ -351,6 +464,13 @@ class DashboardView(BaseView):
         self.btn_repair_agent.setStyleSheet("background-color: #1e8a5e; color: white; font-weight: bold; padding: 0 12px; border-radius: 4px;")
         self.btn_repair_agent.clicked.connect(self.action_repair_agent)
 
+        self.btn_net_diag = QPushButton("🌐 Rede")
+        self.btn_net_diag.setFixedHeight(32)
+        self.btn_net_diag.setToolTip("Diagnóstico de Conectividade (Zabbix/GLPI/SMB) e Reset de Cache DNS/ARP")
+        self.btn_net_diag.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_net_diag.setStyleSheet("background-color: #17a2b8; color: white; font-weight: bold; padding: 0 12px; border-radius: 4px;")
+        self.btn_net_diag.clicked.connect(self.action_network_diag)
+
         self.btn_wol = QPushButton("📡 WoL")
         self.btn_wol.setFixedHeight(32)
         self.btn_wol.setToolTip("Enviar pacote mágico Wake-on-LAN")
@@ -378,9 +498,10 @@ class DashboardView(BaseView):
 
         action_layout.addWidget(self.cmb_remote)
         action_layout.addWidget(self.btn_connect)
-        action_layout.addSpacing(6)
+        action_layout.addSpacing(4)
         action_layout.addWidget(self.cmb_agent_repair)
         action_layout.addWidget(self.btn_repair_agent)
+        action_layout.addWidget(self.btn_net_diag)
         action_layout.addStretch()
         action_layout.addWidget(self.btn_wol)
         action_layout.addWidget(self.btn_logoff)
@@ -411,7 +532,25 @@ class DashboardView(BaseView):
         sys_grid.setSpacing(8)
 
         self.lbl_hostname = QLabel("Hostname: -")
+
+        desc_row = QWidget()
+        desc_row_layout = QHBoxLayout(desc_row)
+        desc_row_layout.setContentsMargins(0, 0, 0, 0)
+        desc_row_layout.setSpacing(6)
         self.lbl_desc = QLabel("Descrição (Local): -")
+        self.btn_edit_desc = QPushButton("✏️")
+        self.btn_edit_desc.setFixedSize(24, 22)
+        self.btn_edit_desc.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_edit_desc.setToolTip("Editar remotamente a Descrição (Local / Setor) deste computador")
+        self.btn_edit_desc.setStyleSheet(
+            "background-color: #2b3a4a; color: #5bc0de; border: 1px solid #4a90e2; "
+            "border-radius: 3px; font-size: 11px; padding: 0;"
+        )
+        self.btn_edit_desc.clicked.connect(self.action_edit_description)
+        desc_row_layout.addWidget(self.lbl_desc)
+        desc_row_layout.addWidget(self.btn_edit_desc)
+        desc_row_layout.addStretch()
+
         self.lbl_hw_model = QLabel("Equipamento: -")
         self.lbl_serial = QLabel("Serial / BIOS: -")
         self.lbl_os = QLabel("SO: -")
@@ -439,7 +578,7 @@ class DashboardView(BaseView):
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         sys_grid.addWidget(self.lbl_hostname, 0, 0)
-        sys_grid.addWidget(self.lbl_desc, 1, 0)
+        sys_grid.addWidget(desc_row, 1, 0)
         sys_grid.addWidget(self.lbl_hw_model, 2, 0)
         sys_grid.addWidget(self.lbl_serial, 3, 0)
         sys_grid.addWidget(self.lbl_os, 4, 0)
@@ -481,26 +620,47 @@ class DashboardView(BaseView):
         self.lbl_logged_count.setStyleSheet("font-size: 22px; font-weight: bold; color: #f0ad4e;")
         self.lbl_logged_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v_log.addWidget(self.lbl_logged_count)
-        v_log.addWidget(QLabel("Usuários Logados", alignment=Qt.AlignmentFlag.AlignCenter))
+        v_log.addWidget(QLabel("Sessões Abertas (Ativas / 2º Plano)", alignment=Qt.AlignmentFlag.AlignCenter))
 
         counters.addLayout(v_prof)
         counters.addLayout(v_log)
         p_layout.addLayout(counters)
 
         self.tbl_profiles = QTableWidget(0, 3)
-        self.tbl_profiles.setHorizontalHeaderLabels(["Usuário", "Último Acesso", "Status"])
-        self.tbl_profiles.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tbl_profiles.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.tbl_profiles.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.tbl_profiles.setHorizontalHeaderLabels(["Usuário", "Último Acesso", "Status da Sessão"])
+        self.tbl_profiles.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.tbl_profiles.horizontalHeader().resizeSection(0, 175)
+        self.tbl_profiles.horizontalHeader().resizeSection(1, 130)
+        self.tbl_profiles.horizontalHeader().setStretchLastSection(True)
+        self.tbl_profiles.horizontalHeader().setSortIndicatorShown(False)
+        self.tbl_profiles.horizontalHeader().sectionClicked.connect(
+            lambda col: _activate_header_click_sort(self.tbl_profiles, col)
+        )
         self.tbl_profiles.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.tbl_profiles.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.tbl_profiles.verticalHeader().setVisible(False)
         self.tbl_profiles.setShowGrid(False)
-        self.tbl_profiles.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.tbl_profiles.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tbl_profiles.customContextMenuRequested.connect(self._on_profiles_table_context_menu)
         header_h = self.tbl_profiles.horizontalHeader().height()
         row_h = 24
-        self.tbl_profiles.setFixedHeight(header_h + (row_h * 5) + 4)
+        self.tbl_profiles.setFixedHeight(header_h + (row_h * 5) + 6)
         p_layout.addWidget(self.tbl_profiles)
+
+        prof_footer = QHBoxLayout()
+        self.btn_logoff_selected_user = QPushButton("🚪 Logoff Selecionado")
+        self.btn_logoff_selected_user.setFixedHeight(26)
+        self.btn_logoff_selected_user.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_logoff_selected_user.setToolTip(
+            "Encerra apenas a sessão do usuário selecionado na tabela (útil para fechar sessões desconectadas em 2º plano)"
+        )
+        self.btn_logoff_selected_user.setStyleSheet(
+            "padding: 0 10px; font-size: 12px; font-weight: bold; background-color: #f0ad4e; color: black; border-radius: 4px;"
+        )
+        self.btn_logoff_selected_user.clicked.connect(self.action_logoff_selected_table_user)
+        prof_footer.addWidget(self.btn_logoff_selected_user)
+
+        prof_footer.addStretch()
 
         self.btn_view_all_profiles = QPushButton("Ver todos")
         self.btn_view_all_profiles.setFixedHeight(26)
@@ -510,8 +670,9 @@ class DashboardView(BaseView):
         )
         self.btn_view_all_profiles.setVisible(False)
         self.btn_view_all_profiles.clicked.connect(self._open_profiles_dialog)
+        prof_footer.addWidget(self.btn_view_all_profiles)
 
-        p_layout.addWidget(self.btn_view_all_profiles, alignment=Qt.AlignmentFlag.AlignRight)
+        p_layout.addLayout(prof_footer)
         grid_cards.addWidget(self.card_profiles, 0, 1)
 
         content_layout.addLayout(grid_cards)
@@ -643,6 +804,196 @@ class DashboardView(BaseView):
     def showEvent(self, event):
         super().showEvent(event)
         self.inp_target.setFocus()
+
+    def action_edit_description(self):
+        """Edita remotamente a Descrição do Computador (Local / Setor) no Windows."""
+        target = self.inp_target.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Aviso", "Informe o computador alvo antes de editar a descrição.")
+            self.inp_target.setFocus()
+            return
+
+        current_desc = "" if self._last_computer_desc in ("-", "Sem descrição") else self._last_computer_desc
+        new_desc, ok = QInputDialog.getText(
+            self,
+            f"Editar Descrição (Local / Setor) — {target}",
+            "Informe o Setor / Local / Modelo para gravar na descrição da máquina:",
+            QLineEdit.EchoMode.Normal,
+            current_desc
+        )
+        if not ok:
+            return
+
+        new_desc = new_desc.strip()
+        try:
+            ps_script = load_ps_template("dashboard", "set_description", desc_b64=self._b64(new_desc))
+        except PsTemplateError as e:
+            QMessageBox.critical(self, "Erro Interno", f"Template ausente:\n{e}")
+            return
+
+        self.btn_edit_desc.setEnabled(False)
+        self.queue_manager.add_task(
+            target_pc=target,
+            script_name=f"Alterar Descrição ({new_desc or 'Vazio'})",
+            script_content=ps_script,
+            module_name="[Dashboard] Inventário",
+            on_finish=lambda t, s, d: self._on_desc_updated(t, new_desc, d),
+            on_error=lambda t, e: self._on_desc_error(t, e)
+        )
+
+    def _on_desc_updated(self, target_pc, new_desc, json_data):
+        self.btn_edit_desc.setEnabled(True)
+        self._last_computer_desc = new_desc or "Sem descrição"
+        self.lbl_desc.setText(
+            f"Descrição (Local): <span style='color: #5bc0de; font-weight: bold;'>{self._last_computer_desc}</span>"
+        )
+        msg = json_data.get("Mensagem", "Descrição atualizada.") if isinstance(json_data, dict) else "Descrição atualizada."
+        QMessageBox.information(self, "Descrição Atualizada", f"[{target_pc}] {msg}")
+
+    def _on_desc_error(self, target_pc, error_msg):
+        self.btn_edit_desc.setEnabled(True)
+        QMessageBox.critical(self, "Erro ao Alterar Descrição", f"Não foi possível alterar a descrição em {target_pc}:\n\n{error_msg}")
+
+    def action_network_diag(self):
+        """Dispara o diagnóstico de conectividade HUL e/ou reset de cache de rede (DNS/ARP/NetBIOS)."""
+        target = self.inp_target.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
+            self.inp_target.setFocus()
+            return
+
+        opcoes = [
+            "1. Testar Conectividade (Gateway, Zabbix:10050, GLPI:443 e SMB:445)",
+            "2. Resetar Cache de Rede (DNS / ARP / NetBIOS) + Testar Conectividade"
+        ]
+        escolha, ok = QInputDialog.getItem(
+            self,
+            f"Diagnóstico & Reset de Rede — {target}",
+            "Selecione a operação desejada:",
+            opcoes,
+            0,
+            False
+        )
+        if not ok or not escolha:
+            return
+
+        mode = "reset_and_diag" if escolha.startswith("2.") else "diag_only"
+        try:
+            ps_script = load_ps_template("dashboard", "net_diag_reset", mode=mode)
+        except PsTemplateError as e:
+            QMessageBox.critical(self, "Erro Interno", f"Template ausente:\n{e}")
+            return
+
+        self.btn_net_diag.setEnabled(False)
+        self.btn_net_diag.setText("⏳ Rede...")
+
+        self.queue_manager.add_task(
+            target_pc=target,
+            script_name="Reset & Diagnóstico de Rede" if mode == "reset_and_diag" else "Diagnóstico de Rede",
+            script_content=ps_script,
+            module_name="[Dashboard] Rede",
+            on_finish=lambda t, s, d: self._on_net_diag_finished(t, d),
+            on_error=lambda t, e: self._on_net_diag_error(t, e)
+        )
+
+    def _on_net_diag_finished(self, target_pc, json_data):
+        self.btn_net_diag.setEnabled(True)
+        self.btn_net_diag.setText("🌐 Rede")
+        if isinstance(json_data, dict):
+            msg = json_data.get("Mensagem", "Concluído.")
+            detalhes = "\n".join(json_data.get("Detalhes", []))
+            texto = f"{msg}\n\n{detalhes}".strip()
+        else:
+            texto = "Diagnóstico concluído."
+        QMessageBox.information(self, f"Resultado de Rede — {target_pc}", texto)
+
+    def _on_net_diag_error(self, target_pc, error_msg):
+        self.btn_net_diag.setEnabled(True)
+        self.btn_net_diag.setText("🌐 Rede")
+        QMessageBox.critical(self, "Falha no Diagnóstico de Rede", f"Erro em {target_pc}:\n\n{error_msg}")
+
+    def action_logoff_selected_table_user(self):
+        """Faz logoff apenas do usuário selecionado na tabela do Dashboard."""
+        row = self.tbl_profiles.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Aviso", "Selecione um usuário na tabela de sessões.")
+            return
+        item = self.tbl_profiles.item(row, 0)
+        p_data = item.data(Qt.ItemDataRole.UserRole) if item else {}
+        username = p_data.get("Name", "")
+        _, _, can_logoff = format_profile_session_status(p_data, getattr(self, "_last_logged_names", set()))
+        if not can_logoff:
+            QMessageBox.information(
+                self, "Sessão Inativa",
+                f"O perfil '{username}' está inativo e não possui sessão aberta para encerrar."
+            )
+            return
+        self.action_logoff_specific_user(username, p_data.get("SessionId"))
+
+    def _on_profiles_table_context_menu(self, pos):
+        item = self.tbl_profiles.itemAt(pos)
+        if not item:
+            return
+        row = item.row()
+        name_item = self.tbl_profiles.item(row, 0)
+        p_data = name_item.data(Qt.ItemDataRole.UserRole) if name_item else {}
+        username = p_data.get("Name", "")
+        _, _, can_logoff = format_profile_session_status(p_data, getattr(self, "_last_logged_names", set()))
+
+        menu = QMenu(self)
+        act_copy = menu.addAction(f"📋 Copiar usuário '{username}'")
+        act_logoff = None
+        if can_logoff:
+            act_logoff = menu.addAction(f"🚪 Fazer Logoff apenas de '{username}'")
+
+        chosen = menu.exec(self.tbl_profiles.viewport().mapToGlobal(pos))
+        if chosen == act_copy:
+            QApplication.clipboard().setText(username)
+        elif act_logoff and chosen == act_logoff:
+            self.action_logoff_specific_user(username, p_data.get("SessionId"))
+
+    def action_logoff_specific_user(self, username: str, session_id=None):
+        """Executa o logoff seletivo de um único usuário na máquina alvo."""
+        target = self.inp_target.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
+            return
+
+        id_str = str(session_id) if session_id is not None else ""
+        reply = QMessageBox.question(
+            self,
+            "Confirmar Logoff Seletivo",
+            f"Deseja encerrar apenas a sessão do usuário '{username}' "
+            f"{f'(ID {id_str}) ' if id_str else ''}em {target}?\n\n"
+            "• Outros usuários logados não serão afetados.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            ps_script = load_ps_template(
+                "dashboard", "logoff_session",
+                username_b64=self._b64(username),
+                session_id_b64=self._b64(id_str)
+            )
+        except PsTemplateError as e:
+            QMessageBox.critical(self, "Erro Interno", f"Template ausente:\n{e}")
+            return
+
+        self.queue_manager.add_task(
+            target_pc=target,
+            script_name=f"Logoff Seletivo ({username})",
+            script_content=ps_script,
+            module_name="[Dashboard] Sessões",
+            on_finish=lambda t, s, d: self._on_selective_logoff_finished(t, username, d),
+            on_error=lambda t, e: QMessageBox.critical(self, "Falha no Logoff", f"Erro ao desconectar '{username}' em {t}:\n{e}")
+        )
+
+    def _on_selective_logoff_finished(self, target_pc, username, json_data):
+        msg = json_data.get("Mensagem", f"Sessão de '{username}' encerrada.") if isinstance(json_data, dict) else "Concluído."
+        QMessageBox.information(self, "Logoff Concluído", f"[{target_pc}] {msg}")
+        self.fetch_telemetry()
 
     def action_repair_agent(self):
         """Dispara o reparo ou instalação automatizada do(s) agente(s) selecionado(s)."""
@@ -1027,11 +1378,20 @@ class DashboardView(BaseView):
             self.lbl_profiles_count.setText(str(total_prof_count))
             self.lbl_profiles_count.setStyleSheet("font-size: 22px; font-weight: bold; color: #2a7de1;")
 
-        self.lbl_logged_count.setText(str(len(logged_names)))
+        active_cnt = data.get("ActiveUsersCount")
+        disc_cnt = data.get("DisconnectedUsersCount")
+        if active_cnt is not None and disc_cnt is not None and disc_cnt > 0:
+            self.lbl_logged_count.setText(f"{len(logged_names)} ({active_cnt} Ativo / {disc_cnt} Desc.)")
+            self.lbl_logged_count.setStyleSheet("font-size: 18px; font-weight: bold; color: #f0ad4e;")
+        else:
+            self.lbl_logged_count.setText(str(len(logged_names)))
+            self.lbl_logged_count.setStyleSheet("font-size: 22px; font-weight: bold; color: #4CAF50;")
+
         self._populate_profiles_table(profiles_list, logged_names)
 
         self.lbl_hostname.setText(f"Hostname: <b>{data.get('HostName', 'N/A')}</b>")
         desc = data.get("ComputerDesc", "Sem descrição")
+        self._last_computer_desc = desc
         self.lbl_desc.setText(f"Descrição (Local): <span style='color: #5bc0de; font-weight: bold;'>{desc}</span>")
         self.lbl_hw_model.setText(f"Equipamento: <b>{data.get('HardwareModel', 'N/A')}</b>")
         self.lbl_serial.setText(f"Serial / BIOS: <b>{data.get('SerialNumber', 'N/A')}</b>")
@@ -1130,13 +1490,14 @@ class DashboardView(BaseView):
         QMessageBox.warning(self, "Aviso Operacional", f"{err}")
 
     def _populate_profiles_table(self, profiles: list, logged_names: set):
+        self.tbl_profiles.setSortingEnabled(False)
+        self.tbl_profiles.horizontalHeader().setSortIndicatorShown(False)
         self.tbl_profiles.setRowCount(0)
 
         if not profiles:
             self.btn_view_all_profiles.setVisible(False)
             return
 
-        self.tbl_profiles.setSortingEnabled(False)
         profiles_sorted = _sort_profiles(profiles, logged_names)
 
         for p in profiles_sorted[:5]:
@@ -1144,26 +1505,18 @@ class DashboardView(BaseView):
             self.tbl_profiles.insertRow(row)
 
             name = p.get("Name", "?")
-            is_temp = _is_temp_profile(p)
-            is_logged = name in logged_names
-
             name_item = QTableWidgetItem(name)
+            name_item.setData(Qt.ItemDataRole.UserRole, p)
             self.tbl_profiles.setItem(row, 0, name_item)
 
             last_use_item = QTableWidgetItem(_format_last_use(p.get("LastUse", "N/A")))
             self.tbl_profiles.setItem(row, 1, last_use_item)
 
-            if is_logged:
-                status_item = QTableWidgetItem("🟢 Logado")
-                status_item.setForeground(Qt.GlobalColor.green)
-            elif is_temp:
-                status_item = QTableWidgetItem("🟠 Temp / Órfão")
-                status_item.setForeground(Qt.GlobalColor.yellow)
-            else:
-                status_item = QTableWidgetItem("⚪ Inativo")
+            status_text, color, _ = format_profile_session_status(p, logged_names)
+            status_item = QTableWidgetItem(status_text)
+            if color is not None:
+                status_item.setForeground(color)
             self.tbl_profiles.setItem(row, 2, status_item)
-
-        self.tbl_profiles.setSortingEnabled(True)
 
         total = len(profiles)
         if total > 5:
@@ -1176,7 +1529,11 @@ class DashboardView(BaseView):
         profiles = getattr(self, "_last_profiles_list", [])
         logged_names = getattr(self, "_last_logged_names", set())
         target = self.inp_target.text().strip() or "N/A"
-        dlg = ProfilesDialog(profiles, logged_names, target, parent=self)
+        dlg = ProfilesDialog(
+            profiles, logged_names, target,
+            on_logoff_callback=self.action_logoff_specific_user,
+            parent=self
+        )
         dlg.exec()
 
     def change_windows_key(self):
