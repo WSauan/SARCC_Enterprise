@@ -1,5 +1,13 @@
 # Histórico de Versões (Changelog) — SARCC Enterprise
 
+## [v2.12.0] — 2026-11-19
+### 🚀 Laudo de Garantia, Exportação CSV, Descoberta de Alvos e Automação de Build
+* **Laudo Técnico de Garantia em 1 Clique (`SystemManagerView`):** Adicionado botão **📄 Laudo Garantia (.txt)** na aba **Logs de Eventos** que consulta hardware, serial/BIOS, uptime e status S.M.A.R.T. e consolida os eventos exibidos/filtrados em relatório `.txt`.
+* **Exportação CSV em Serviços e Impressoras (`SystemManagerView`):** Adicionados botões **📄 Exportar CSV** nas abas **Serviços** e **Impressoras & Spooler** respeitando filtros ativos e codificação `UTF-8 com BOM` (`;`).
+* **Descoberta de Alvos por Sub-rede ou Active Directory (`ExecutionView`):** Adicionado botão **🔎 Descobrir Alvos** com suporte a varredura de faixa/CIDR e consulta ao Active Directory (`Get-ADComputer` / `dsquery`).
+* **Build Automatizada por Versão (`build_release.ps1`):** Leitura automática de `__version__` em `core/version.py` e validação da presença da versão no `CHANGELOG.md` antes da compilação.
+* **Expansão da Suíte de Testes (`tests/test_v2120_features.py`):** Cobertura automatizada para geração de laudo de garantia, exportação CSV, expansão de sub-redes e sondagem de conectividade (`probe_host`).
+
 ## [v2.11.0] — 2026-11-19
 ### 🚀 Diagnóstico de Reinicializações, Filtros de Data/Hora e Melhorias Operacionais
 * **Filtro de Reinicializações Inesperadas e Intervalo de Data/Hora (`SystemManagerView` & `get_events.ps1`):** Adicionada opção de filtro para eventos de reinicialização (`41 6008 1074 6006 6009 1001`) e seleção de período (`Últimas 2h`, `Últimas 12h`, `Últimas 24h`, `Últimos 7 dias`, `Últimos 30 dias` e `Intervalo de data/hora (De / Até)`).

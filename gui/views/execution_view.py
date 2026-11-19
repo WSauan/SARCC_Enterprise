@@ -1,5 +1,8 @@
+import ipaddress
 import os
 import re
+import socket
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from PyQt6.QtWidgets import (
@@ -8,7 +11,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QGroupBox,
     QMessageBox, QTextEdit, QFileDialog,
     QSizePolicy, QListWidget, QListWidgetItem, QDialog,
-    QApplication
+    QApplication, QInputDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
@@ -34,6 +37,179 @@ def parse_targets_string(raw_text: str) -> list[str]:
         if host:
             valid.append(host)
     return list(dict.fromkeys(valid))
+
+
+def expand_subnet_range(spec: str) -> list[str]:
+    """Expande CIDR (ex: 10.8.128.0/28) ou intervalo curto (ex: 10.8.128.1-20) em lista de IPs."""
+    raw = (spec or "").strip()
+    if not raw:
+        return []
+
+    if "/" in raw:
+        net = ipaddress.ip_network(raw, strict=False)
+        return [str(ip) for ip in list(net.hosts())[:254]]
+
+    m = re.match(r"^(\d{1,3}(?:\.\d{1,3}){3})\s*-\s*(\d{1,3})$", raw)
+    if m:
+        base_ip = ipaddress.ip_address(m.group(1))
+        end_octet = int(m.group(2))
+        parts = str(base_ip).split(".")
+        start_octet = int(parts[3])
+        if 0 <= start_octet <= 254 and 0 <= end_octet <= 254 and start_octet <= end_octet:
+            return [f"{parts[0]}.{parts[1]}.{parts[2]}.{i}" for i in range(start_octet, end_octet + 1)][:254]
+
+    return []
+
+
+def _resolve_hostname_for_ip(ip_str: str) -> str:
+    """Resolve o nome do host a partir do IP (priorizando o nome curto), retornando o IP se não resolver."""
+    try:
+        fqdn = socket.gethostbyaddr(ip_str)[0]
+        short_name = fqdn.split(".")[0].strip().upper()
+        if short_name and short_name != ip_str:
+            return short_name
+    except Exception:
+        pass
+    return ip_str.strip().upper()
+
+
+def _ip_in_subnet(ip_str: str, subnet_spec: str) -> bool:
+    """Verifica se um IP pertence ao CIDR ou intervalo informado."""
+    raw = (subnet_spec or "").strip()
+    if not raw or not ip_str:
+        return True
+    try:
+        ip_obj = ipaddress.ip_address(ip_str.strip())
+    except ValueError:
+        return False
+
+    if "/" in raw:
+        try:
+            net = ipaddress.ip_network(raw, strict=False)
+            return ip_obj in net
+        except ValueError:
+            return False
+
+    range_ips = expand_subnet_range(raw)
+    return str(ip_obj) in set(range_ips)
+
+
+class HostDiscoveryWorker(QThread):
+    """Descobre hosts ativos na sub-rede, no AD ou combinando AD + Sub-rede, priorizando o nome do host."""
+    finished = pyqtSignal(list, dict, str)
+
+    def __init__(self, mode: str, query: str = "", subnet_filter: str = ""):
+        super().__init__()
+        self.mode = mode
+        self.query = query
+        self.subnet_filter = subnet_filter
+
+    def _query_ad_computers(self, name_filter: str) -> list[dict]:
+        """Consulta computadores no AD (Nome e, quando disponível, IPv4)."""
+        filtro = (name_filter or "*").replace("'", "").strip()
+        ps_cmd = (
+            "try { "
+            "  if (Get-Command Get-ADComputer -ErrorAction SilentlyContinue) { "
+            f"    Get-ADComputer -Filter \"Name -like '{filtro}'\" -Properties IPv4Address | "
+            "      Select-Object Name, IPv4Address | ConvertTo-Json -Compress "
+            "  } else { "
+            f"    & dsquery computer -name \"{filtro}\" -limit 200 2>$null | "
+            "      ForEach-Object { [PSCustomObject]@{ Name = (($_ -split ',')[0] -replace '^\"CN=',''); IPv4Address = '' } } | "
+            "      ConvertTo-Json -Compress "
+            "  } "
+            "} catch { '[]' }"
+        )
+        records = []
+        try:
+            proc = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            raw_out = (proc.stdout or "").strip()
+            if raw_out:
+                import json
+                parsed = json.loads(raw_out)
+                items = parsed if isinstance(parsed, list) else [parsed]
+                for item in items:
+                    if isinstance(item, dict):
+                        name = str(item.get("Name") or "").strip().upper()
+                        ip = str(item.get("IPv4Address") or "").strip()
+                        if name:
+                            records.append({"name": name, "ip": ip})
+        except Exception:
+            pass
+        return records
+
+    def run(self):
+        conn = RemoteConnectionManager()
+        host_to_ip: dict[str, str] = {}
+        ordered_targets: list[str] = []
+
+        if self.mode == "subnet":
+            ips = expand_subnet_range(self.query)
+            if not ips:
+                self.finished.emit([], {}, "Informe uma sub-rede válida (ex: 10.8.128.0/24 ou 10.8.128.1-30).")
+                return
+
+            def _probe_and_resolve(ip_str: str):
+                probe = conn.probe_host(ip_str, port_timeout=0.35)
+                if probe["reachable"] or probe["ping_ok"]:
+                    resolved_name = _resolve_hostname_for_ip(ip_str)
+                    return resolved_name, ip_str
+                return None
+
+            workers = min(24, max(4, len(ips)))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for res in pool.map(_probe_and_resolve, ips):
+                    if res:
+                        h_name, h_ip = res
+                        host_to_ip[h_name] = h_ip
+                        if h_name not in ordered_targets:
+                            ordered_targets.append(h_name)
+
+            self.finished.emit(ordered_targets, host_to_ip, "")
+            return
+
+        ad_records = self._query_ad_computers(self.query or "*")
+
+        if self.mode == "ad_subnet":
+            if not self.subnet_filter.strip():
+                self.finished.emit([], {}, "Informe a sub-rede para filtrar os computadores do AD.")
+                return
+
+            def _match_ad_in_subnet(rec: dict):
+                name = rec["name"]
+                ip = rec.get("ip", "")
+                if not ip:
+                    try:
+                        ip = socket.gethostbyname(name)
+                    except Exception:
+                        ip = ""
+                if ip and _ip_in_subnet(ip, self.subnet_filter):
+                    return name, ip
+                return None
+
+            workers = min(16, max(2, len(ad_records)))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for res in pool.map(_match_ad_in_subnet, ad_records):
+                    if res:
+                        h_name, h_ip = res
+                        host_to_ip[h_name] = h_ip
+                        if h_name not in ordered_targets:
+                            ordered_targets.append(h_name)
+
+            self.finished.emit(ordered_targets, host_to_ip, "")
+            return
+
+        # Modo AD padrão: prioriza sempre o nome do computador e guarda o IP se já vier do AD
+        for rec in ad_records:
+            h_name = rec["name"]
+            if rec.get("ip"):
+                host_to_ip[h_name] = rec["ip"]
+            if h_name not in ordered_targets:
+                ordered_targets.append(h_name)
+
+        self.finished.emit(ordered_targets, host_to_ip, "")
 
 
 class BatchPingWorker(QThread):
@@ -109,6 +285,7 @@ class ExecutionView(BaseView):
         self.queue_manager = getattr(main_window_ref, "queue_manager", None) or TaskQueueManager(max_threads=10)
         self.script_repo = ScriptRepository()
         self.script_service = ScriptService(self.script_repo)
+        self.discovered_host_ips: dict[str, str] = {}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -129,6 +306,13 @@ class ExecutionView(BaseView):
         self.target_input.setPlaceholderText("Ex: localhost, 10.8.128.14, HUL-WK-244377E...")
         self.target_input.setStyleSheet("padding: 0 10px;")
         self.target_input.textChanged.connect(self._force_uppercase)
+
+        self.btn_discover_targets = QPushButton("🔎 Descobrir Alvos")
+        self.btn_discover_targets.setFixedHeight(32)
+        self.btn_discover_targets.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_discover_targets.setToolTip("Varre faixa de sub-rede, consulta AD ou combina AD + Sub-rede (priorizando o nome do host)")
+        self.btn_discover_targets.setStyleSheet("background-color: #4a90e2; color: white; padding: 0 14px; font-weight: bold; border-radius: 4px;")
+        self.btn_discover_targets.clicked.connect(self.discover_targets)
 
         self.btn_filter_online = QPushButton("📡 Filtrar Online (Ping)")
         self.btn_filter_online.setFixedHeight(32)
@@ -151,6 +335,7 @@ class ExecutionView(BaseView):
 
         target_layout.addWidget(QLabel("IPs ou Hostnames:"))
         target_layout.addWidget(self.target_input, stretch=1)
+        target_layout.addWidget(self.btn_discover_targets)
         target_layout.addWidget(self.btn_filter_online)
         target_layout.addWidget(self.btn_import_targets)
         target_layout.addWidget(self.btn_clear_targets)
@@ -170,7 +355,7 @@ class ExecutionView(BaseView):
         self.inp_filter_scripts.setFixedHeight(32)
         self.inp_filter_scripts.setPlaceholderText("🔍 Filtrar scripts por nome...")
         self.inp_filter_scripts.setStyleSheet("padding: 0 10px;")
-        self.inp_filter_scripts.textChanged.connect(self._filtrar_scripts)
+        self.inp_filter_scripts.textChanged.connect(lambda text: self._filtrar_scripts(self.inp_filter_scripts.text()))
         row1.addWidget(self.inp_filter_scripts, stretch=1)
 
         self.btn_select_all_scripts = QPushButton("☑ Marcar Visíveis")
@@ -293,6 +478,91 @@ class ExecutionView(BaseView):
 
         bottom_layout.addWidget(console_group, stretch=40)
         main_layout.addLayout(bottom_layout, stretch=1)
+
+    def discover_targets(self):
+        """Descobre computadores por sub-rede (resolvendo nome), no AD ou combinando AD + Sub-rede."""
+        opcoes = [
+            "1. Consultar Active Directory (padrão ex: HUL-WK-* ou *)",
+            "2. Varredura de Sub-rede (resolve nome do host quando possível)",
+            "3. AD + Sub-rede (computadores do AD na sub-rede informada)"
+        ]
+        escolha, ok = QInputDialog.getItem(
+            self, "Descobrir Computadores Alvo",
+            "Selecione a origem de descoberta (prioriza o nome do host):",
+            opcoes, 0, False
+        )
+        if not ok or not escolha:
+            return
+
+        subnet_filter = ""
+        if escolha.startswith("1."):
+            param, ok_p = QInputDialog.getText(
+                self, "Filtro Active Directory",
+                "Informe o padrão de nome do computador (ex: HUL-WK-* ou *):",
+                QLineEdit.EchoMode.Normal, "HUL-WK-*"
+            )
+            mode = "ad"
+        elif escolha.startswith("2."):
+            param, ok_p = QInputDialog.getText(
+                self, "Faixa de Sub-rede",
+                "Informe CIDR (ex: 10.8.128.0/26) ou faixa final (ex: 10.8.128.1-40):",
+                QLineEdit.EchoMode.Normal, "10.8.128.1-30"
+            )
+            mode = "subnet"
+        else:
+            param, ok_p = QInputDialog.getText(
+                self, "Filtro Active Directory",
+                "Informe o padrão de nome no AD (ex: HUL-WK-* ou *):",
+                QLineEdit.EchoMode.Normal, "*"
+            )
+            if not ok_p:
+                return
+            sub_val, ok_s = QInputDialog.getText(
+                self, "Sub-rede Alvo",
+                "Informe a sub-rede (ex: 10.8.128.0/24 ou 10.8.128.1-254):",
+                QLineEdit.EchoMode.Normal, "10.8.128.0/24"
+            )
+            if not ok_s:
+                return
+            subnet_filter = sub_val.strip()
+            mode = "ad_subnet"
+
+        if not ok_p or not param.strip():
+            return
+
+        self.btn_discover_targets.setEnabled(False)
+        self.btn_discover_targets.setText("⏳ Descobrindo...")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+        self._discovery_worker = HostDiscoveryWorker(
+            mode=mode, query=param.strip(), subnet_filter=subnet_filter
+        )
+        self._discovery_worker.finished.connect(self._on_discovery_finished)
+        self._discovery_worker.start()
+
+    def _on_discovery_finished(self, found: list[str], host_ip_map: dict, err_msg: str):
+        QApplication.restoreOverrideCursor()
+        self.btn_discover_targets.setEnabled(True)
+        self.btn_discover_targets.setText("🔎 Descobrir Alvos")
+
+        if err_msg:
+            QMessageBox.warning(self, "Aviso", err_msg)
+            return
+
+        if not found:
+            QMessageBox.information(self, "Descoberta de Alvos", "Nenhum computador encontrado para o critério informado.")
+            return
+
+        if isinstance(host_ip_map, dict):
+            self.discovered_host_ips.update(host_ip_map)
+
+        existing = parse_targets_string(self.target_input.text())
+        merged = list(dict.fromkeys(existing + found))
+        self.target_input.setText(", ".join(merged))
+        QMessageBox.information(
+            self, "Descoberta Concluída",
+            f"{len(found)} host(s) adicionado(s) por nome (total: {len(merged)})."
+        )
 
     def filter_online_targets(self):
         """Testa os alvos em paralelo e mantém no campo apenas os que respondem na rede."""

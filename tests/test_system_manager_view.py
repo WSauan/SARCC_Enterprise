@@ -1,9 +1,11 @@
+import csv
 from unittest.mock import MagicMock
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QTableWidget, QTableWidgetItem
 from PyQt6.QtCore import Qt
 from gui.views.system_manager_view import (
     safe_int, safe_float, normalize_service_status,
-    normalize_printer_status, SysManagerWorker, SystemManagerView
+    normalize_printer_status, SysManagerWorker, SystemManagerView,
+    build_warranty_report_text, export_qtable_to_csv, REBOOT_EVENT_IDS
 )
 
 _QAPP = QApplication.instance() or QApplication([])
@@ -98,3 +100,61 @@ def test_system_manager_populates_printers_table():
     assert view.tbl_printers.item(0, 4).text() == "Pronta (Online)"
     assert view.tbl_printers.item(1, 4).text() == "Offline"
     view.close()
+
+
+def test_build_warranty_report_text_includes_hardware_and_events():
+    """Garante que o laudo de garantia consolida hardware, serial/BIOS, S.M.A.R.T. e eventos."""
+    hw = {
+        "HostName": "HUL-WK-TESTE",
+        "HardwareModel": "Dell OptiPlex 7090",
+        "SerialNumber": "SN987654",
+        "ComputerDesc": "UTI Geral",
+        "OSVersion": "Microsoft Windows 11 Pro",
+        "Uptime": "2d 4h 15m",
+        "DiskType": "NVMe SSD",
+        "DiskSmart": "Healthy (OK)",
+        "DiskFree": 120.5,
+    }
+    events = [
+        {
+            "ID": 41,
+            "Data": "2026-11-19 09:17:13",
+            "Nivel": "Nível Crítico",
+            "Fonte": "Microsoft-Windows-Kernel-Power",
+            "Mensagem": "O sistema foi reiniciado sem um desligamento correto primeiro.",
+        }
+    ]
+    report = build_warranty_report_text(
+        target_pc="HUL-WK-TESTE",
+        hw_info=hw,
+        events=events,
+        log_name="System",
+        period_label="Últimas 24 horas",
+        technician="adm.wsauan",
+    )
+    assert "HUL-WK-TESTE" in report
+    assert "SN987654" in report
+    assert "NVMe SSD" in report
+    assert "ID 41" in report
+    assert "41" in REBOOT_EVENT_IDS
+
+
+def test_export_qtable_to_csv_respects_hidden_rows(tmp_path):
+    """Garante que export_qtable_to_csv exporta apenas linhas visíveis em UTF-8 BOM com ';'."""
+    tbl = QTableWidget(2, 2)
+    tbl.setHorizontalHeaderLabels(["Nome", "Status"])
+    tbl.setItem(0, 0, QTableWidgetItem("Spooler"))
+    tbl.setItem(0, 1, QTableWidgetItem("Em Execução"))
+    tbl.setItem(1, 0, QTableWidgetItem("Oculto"))
+    tbl.setItem(1, 1, QTableWidgetItem("Parado"))
+    tbl.setRowHidden(1, True)
+
+    out_file = tmp_path / "servicos.csv"
+    count = export_qtable_to_csv(tbl, str(out_file))
+    assert count == 1
+
+    with open(out_file, "r", encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f, delimiter=";"))
+    assert rows[0] == ["Nome", "Status"]
+    assert rows[1] == ["Spooler", "Em Execução"]
+    assert len(rows) == 2

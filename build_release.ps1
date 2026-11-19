@@ -1,24 +1,64 @@
 <#
 .SYNOPSIS
     Script oficial de Build e Empacotamento do SARCC Enterprise.
-    Valida testes unitarios, compila via PyInstaller e monta o pacote de distribuicao.
+    Le a versao de core/version.py, valida CHANGELOG.md e testes unitarios,
+    compila via PyInstaller e monta o pacote de distribuicao.
 #>
 param(
-    [string]$Version = "2.9.0"
+    [string]$Version = "",
+    [switch]$SkipChangelogCheck
 )
 
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $ErrorActionPreference = "Continue"
-
-$DateStamp = (Get-Date).ToString("yyyyMMdd")
-$ExeName = "SARCC_v${Version}_${DateStamp}"
-$ReleaseFolder = Join-Path $PSScriptRoot "releases\$ExeName"
 
 # Caracteres Unicode imunes a falta de BOM no PowerShell 5.1
 $c_a_til  = [char]0x00E3 # ã
 $c_a_ag   = [char]0x00E1 # á
 $c_c_ced  = [char]0x00E7 # ç
 $c_I_ag   = [char]0x00CD # Í
+
+# 0. Leitura automatica da versao a partir de core/version.py
+$VersionFile = Join-Path $PSScriptRoot "core\version.py"
+$DetectedVersion = ""
+if (Test-Path $VersionFile) {
+    $verContent = Get-Content -Path $VersionFile -Raw -Encoding UTF8
+    if ($verContent -match '__version__\s*=\s*["'']([^"'']+)["'']') {
+        $DetectedVersion = $Matches[1].Trim()
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    if ([string]::IsNullOrWhiteSpace($DetectedVersion)) {
+        Write-Host "ERRO: N${c_a_til}o foi poss${[char]0x00ED}vel detectar __version__ em core\version.py e -Version n${c_a_til}o foi informado." -ForegroundColor Red
+        exit 1
+    }
+    $Version = $DetectedVersion
+    Write-Host "Vers${c_a_til}o detectada automaticamente em core\version.py: v$Version" -ForegroundColor Gray
+} elseif (-not [string]::IsNullOrWhiteSpace($DetectedVersion) -and $Version -ne $DetectedVersion) {
+    Write-Host "ERRO: Diverg${[char]0x00EA}ncia de vers${c_a_til}o! Par${[char]0x00E2}metro -Version '$Version' difere de core\version.py ('$DetectedVersion')." -ForegroundColor Red
+    exit 1
+}
+
+# Validacao da presenca da versao no CHANGELOG.md
+$ChangelogFile = Join-Path $PSScriptRoot "CHANGELOG.md"
+if (-not $SkipChangelogCheck) {
+    if (-not (Test-Path $ChangelogFile)) {
+        Write-Host "ERRO: Arquivo CHANGELOG.md n${c_a_til}o encontrado na raiz do projeto." -ForegroundColor Red
+        exit 1
+    }
+    $changelogText = Get-Content -Path $ChangelogFile -Raw -Encoding UTF8
+    $escapedVer = [regex]::Escape($Version)
+    if ($changelogText -notmatch "\[\s*v?$escapedVer\s*\]") {
+        Write-Host "ERRO: A vers${c_a_til}o 'v$Version' ainda n${c_a_til}o est${c_a_ag} documentada no CHANGELOG.md!" -ForegroundColor Red
+        Write-Host "Atualize o CHANGELOG.md antes de gerar a build (ou use -SkipChangelogCheck para ignorar)." -ForegroundColor Yellow
+        exit 1
+    }
+}
+
+$DateStamp = (Get-Date).ToString("yyyyMMdd")
+$ExeName = "SARCC_v${Version}_${DateStamp}"
+$ReleaseFolder = Join-Path $PSScriptRoot "releases\$ExeName"
 
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host " INICIANDO EMPACOTAMENTO: $ExeName" -ForegroundColor Cyan

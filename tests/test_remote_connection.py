@@ -70,6 +70,18 @@ def test_execute_script_falls_back_to_wmi_when_winrm_fails(mocker):
     assert "OK via WMI" in res["log_saida"]
 
 
+def test_probe_host_local_and_offline(mocker):
+    """Valida sondagem rápida em localhost e falha rápida quando portas e ping não respondem."""
+    conn = RemoteConnectionManager()
+    assert conn.probe_host("localhost")["reachable"] is True
+
+    mocker.patch.object(conn, "_is_port_open", return_value=False)
+    mocker.patch.object(conn, "ping_host", return_value=False)
+    off = conn.probe_host("192.0.2.99", port_timeout=0.1)
+    assert off["reachable"] is False
+    assert off["ping_ok"] is False
+
+
 def test_localizar_vnc_viewer_finds_portable_binary(tmp_path, mocker):
     """Verifica se localizar_vnc_viewer prioriza o executável portátil na pasta do SARCC."""
     fake_vnc = tmp_path / "vncviewer.exe"

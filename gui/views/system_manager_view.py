@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 import base64
@@ -7,17 +8,99 @@ from PyQt6.QtWidgets import (
     QLineEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QGroupBox,
     QMessageBox, QTabWidget, QComboBox, QDialog,
-    QTextEdit, QGridLayout, QApplication, QDateTimeEdit
+    QTextEdit, QGridLayout, QApplication, QDateTimeEdit,
+    QFileDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDate, QTime, QDateTime
 
 from core.remote_connection import RemoteConnectionManager
 from core.ps_loader import load_ps_template, PsTemplateError
 from infrastructure.repositories.execution_repository import ExecutionRepository
-from gui.views.base_view import BaseView
+from gui.views.base_view import BaseView, sanitize_filename
 from gui.views.software_view import fix_mojibake
 
 REBOOT_EVENT_IDS = "41,6008,1074,6006,6009,1001"
+
+
+def export_qtable_to_csv(table: QTableWidget, file_path: str) -> int:
+    """Exporta as linhas visíveis de um QTableWidget para CSV compatível com Excel (UTF-8 BOM + ';')."""
+    headers = []
+    for col in range(table.columnCount()):
+        h_item = table.horizontalHeaderItem(col)
+        headers.append(h_item.text() if h_item else f"Coluna_{col}")
+
+    exported_rows = 0
+    with open(file_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(headers)
+
+        for row in range(table.rowCount()):
+            if table.isRowHidden(row):
+                continue
+            row_vals = []
+            for col in range(table.columnCount()):
+                item = table.item(row, col)
+                val = item.data(Qt.ItemDataRole.EditRole) if item and item.data(Qt.ItemDataRole.EditRole) is not None else (item.text() if item else "")
+                row_vals.append(fix_mojibake(str(val)))
+            writer.writerow(row_vals)
+            exported_rows += 1
+
+    return exported_rows
+
+
+def build_warranty_report_text(
+    target_pc: str,
+    hw_info: dict,
+    events: list[dict],
+    log_name: str = "System",
+    period_label: str = "Qualquer período",
+    technician: str = "N/A",
+) -> str:
+    """Gera laudo técnico em texto puro para acionamento de garantia / GLPI."""
+    hw = hw_info if isinstance(hw_info, dict) else {}
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ev_list = [e for e in (events or []) if isinstance(e, dict)]
+
+    lines = [
+        "=" * 84,
+        " [ SARCC ENTERPRISE ] LAUDO TÉCNICO DE GARANTIA — DIAGNÓSTICO DE REINICIALIZAÇÕES",
+        "=" * 84,
+        f" DATA DO LAUDO   : {now_str}",
+        f" TÉCNICO         : {fix_mojibake(str(technician or 'N/A'))}",
+        f" COMPUTADOR ALVO : {fix_mojibake(str(target_pc or 'N/A'))}",
+        f" LOG CONSULTADO  : {fix_mojibake(str(log_name or 'System'))}",
+        f" PERÍODO FILTRO  : {fix_mojibake(str(period_label or 'Qualquer período'))}",
+        "-" * 84,
+        " IDENTIFICAÇÃO DO EQUIPAMENTO & HARDWARE",
+        "-" * 84,
+        f" Hostname        : {fix_mojibake(str(hw.get('HostName', target_pc or 'N/A')))}",
+        f" Fabricante/Mod. : {fix_mojibake(str(hw.get('HardwareModel', 'N/A')))}",
+        f" Serial / BIOS   : {fix_mojibake(str(hw.get('SerialNumber', 'N/A')))}",
+        f" Local/Descrição : {fix_mojibake(str(hw.get('ComputerDesc', 'N/A')))}",
+        f" Sistema Operac. : {fix_mojibake(str(hw.get('OSVersion', 'N/A')))}",
+        f" Uptime Atual    : {fix_mojibake(str(hw.get('Uptime', 'N/A')))}",
+        f" Armazenamento  : {fix_mojibake(str(hw.get('DiskType', 'N/A')))} | S.M.A.R.T.: {fix_mojibake(str(hw.get('DiskSmart', 'N/A')))} | Livre C:: {fix_mojibake(str(hw.get('DiskFree', 'N/A')))} GB",
+        "-" * 84,
+        f" OCORRÊNCIAS REGISTRADAS ({len(ev_list)} evento(s))",
+        "-" * 84,
+    ]
+
+    if not ev_list:
+        lines.append(" Nenhum evento listado na grade atual para o filtro selecionado.")
+    else:
+        for idx, ev in enumerate(ev_list, start=1):
+            ev_id = fix_mojibake(str(ev.get("ID", "N/A")))
+            ev_dt = fix_mojibake(str(ev.get("Data", "N/A")))
+            ev_lvl = fix_mojibake(str(ev.get("Nivel", "N/A")))
+            ev_src = fix_mojibake(str(ev.get("Fonte", "N/A")))
+            ev_msg = " ".join(fix_mojibake(str(ev.get("Mensagem", ""))).split())
+            if len(ev_msg) > 320:
+                ev_msg = ev_msg[:317] + "..."
+            lines.append(f" [{idx:02d}] {ev_dt} | ID {ev_id} | {ev_lvl} | {ev_src}")
+            lines.append(f"      Detalhe: {ev_msg}")
+
+    lines.append("=" * 84)
+    return "\n".join(lines) + "\n"
 
 
 def safe_int(value, default: int = 0) -> int:
@@ -195,6 +278,35 @@ try {
 }
 """
 
+WARRANTY_HW_PROBE_SCRIPT = """
+$ErrorActionPreference = 'SilentlyContinue'
+$cs = Get-CimInstance Win32_ComputerSystem -Property Manufacturer, Model | Select-Object -First 1
+$bios = Get-CimInstance Win32_BIOS -Property SerialNumber | Select-Object -First 1
+$os = Get-CimInstance Win32_OperatingSystem -Property Caption, Description, LastBootUpTime | Select-Object -First 1
+$drive = Get-PSDrive C
+$phys = Get-PhysicalDisk | Select-Object -First 1
+
+$hwModel = if ($cs) { (("$($cs.Manufacturer) $($cs.Model)" -replace 'Inc\\.|Corporation|Ltd\\.|Co\\.', '') -replace '\\s+', ' ').Trim() } else { "N/A" }
+$serial = if ($bios -and $bios.SerialNumber) { $bios.SerialNumber.Trim() } else { "N/A" }
+$desc = if ($os -and $os.Description) { $os.Description.Trim() } else { "Sem descrição" }
+$uptime = if ($os -and $os.LastBootUpTime) { $u = (Get-Date) - $os.LastBootUpTime; "$($u.Days)d $($u.Hours)h $($u.Minutes)m" } else { "N/A" }
+$diskFree = if ($drive) { [math]::Round($drive.Free / 1GB, 2) } else { 0 }
+$diskType = if ($phys -and $phys.BusType -match 'NVMe') { "NVMe SSD" } elseif ($phys -and $phys.MediaType -match 'SSD') { "SSD" } elseif ($phys -and $phys.MediaType -match 'HDD') { "HDD" } else { "Disco Local" }
+$diskSmart = if ($phys) { "$($phys.HealthStatus) ($($phys.OperationalStatus))" } else { "N/A" }
+
+[PSCustomObject]@{
+    HostName      = $env:COMPUTERNAME
+    HardwareModel = $hwModel
+    SerialNumber  = $serial
+    ComputerDesc  = $desc
+    OSVersion     = if ($os) { $os.Caption } else { "N/A" }
+    Uptime        = $uptime
+    DiskType      = $diskType
+    DiskSmart     = $diskSmart
+    DiskFree      = $diskFree
+} | ConvertTo-Json -Compress | Write-Output
+"""
+
 
 class SysManagerWorker(QThread):
     finished = pyqtSignal(list, str)
@@ -253,6 +365,9 @@ class SysManagerWorker(QThread):
         if self.action_type == "search_gpo_printers":
             return GPO_PRINTER_SYNC_SCRIPT
 
+        if self.action_type == "generate_warranty_report":
+            return WARRANTY_HW_PROBE_SCRIPT
+
         if self.action_type in ("flush_spooler", "clear_printer_queue", "remove_printer"):
             return load_ps_template(
                 "system_manager", "manage_spooler",
@@ -288,7 +403,7 @@ class SysManagerWorker(QThread):
                 elif "StatusFinal" in json_data or "Mensagem" in json_data:
                     self.finished.emit([json_data], self.action_type)
                 else:
-                    self.finished.emit([], self.action_type)
+                    self.finished.emit([json_data] if json_data else [], self.action_type)
             else:
                 self.error.emit(fix_mojibake(res.get("log_saida", "Erro desconhecido na coleta WMI/WinRM.")))
         except Exception as e:
@@ -399,11 +514,18 @@ class SystemManagerView(BaseView):
         self.btn_restart_svc.setStyleSheet("background-color: #f0ad4e; color: black; font-weight: bold; padding: 0 15px; border-radius: 4px;")
         self.btn_restart_svc.clicked.connect(lambda: self.manage_service("Restart"))
 
+        self.btn_export_svc = QPushButton("📄 Exportar CSV")
+        self.btn_export_svc.setFixedHeight(32)
+        self.btn_export_svc.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_export_svc.setStyleSheet("background-color: #17a2b8; color: white; font-weight: bold; padding: 0 14px; border-radius: 4px;")
+        self.btn_export_svc.clicked.connect(lambda: self._export_table_csv(self.tbl_svc, "Servicos"))
+
         svc_controls.addWidget(self.inp_search_svc, stretch=1)
         svc_controls.addWidget(self.btn_load_svc)
         svc_controls.addWidget(self.btn_start_svc)
         svc_controls.addWidget(self.btn_stop_svc)
         svc_controls.addWidget(self.btn_restart_svc)
+        svc_controls.addWidget(self.btn_export_svc)
         svc_layout.addLayout(svc_controls)
 
         self.tbl_svc = QTableWidget(0, 3)
@@ -446,6 +568,17 @@ class SystemManagerView(BaseView):
         )
         self.btn_refresh_summary.clicked.connect(self.load_critical_summary)
         summary_header.addWidget(self.btn_refresh_summary)
+
+        self.btn_warranty_report = QPushButton("📄 Laudo Garantia (.txt)")
+        self.btn_warranty_report.setFixedHeight(32)
+        self.btn_warranty_report.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_warranty_report.setToolTip("Exporta laudo com Serial/BIOS, S.M.A.R.T. e eventos listados para garantia")
+        self.btn_warranty_report.setStyleSheet(
+            "padding: 0 14px; background-color: #1e8a5e; color: white; "
+            "font-weight: bold; border-radius: 4px;"
+        )
+        self.btn_warranty_report.clicked.connect(self.export_warranty_report)
+        summary_header.addWidget(self.btn_warranty_report)
 
         ev_layout.addLayout(summary_header)
 
@@ -624,12 +757,19 @@ class SystemManagerView(BaseView):
         )
         self.btn_remove_printer.clicked.connect(self.remove_selected_printer)
 
+        self.btn_export_prt = QPushButton("📄 Exportar CSV")
+        self.btn_export_prt.setFixedHeight(32)
+        self.btn_export_prt.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_export_prt.setStyleSheet("background-color: #17a2b8; color: white; font-weight: bold; padding: 0 14px; border-radius: 4px;")
+        self.btn_export_prt.clicked.connect(lambda: self._export_table_csv(self.tbl_printers, "Impressoras"))
+
         prt_controls.addWidget(self.inp_search_printers, stretch=1)
         prt_controls.addWidget(self.btn_search_printers)
         prt_controls.addWidget(self.btn_load_printers)
         prt_controls.addWidget(self.btn_flush_spooler)
         prt_controls.addWidget(self.btn_clear_queue)
         prt_controls.addWidget(self.btn_remove_printer)
+        prt_controls.addWidget(self.btn_export_prt)
         prt_layout.addLayout(prt_controls)
 
         self.tbl_printers = QTableWidget(0, 5)
@@ -651,6 +791,47 @@ class SystemManagerView(BaseView):
 
         self.tabs.currentChanged.connect(self.on_tab_changed)
         layout.addWidget(self.tabs)
+
+    def _export_table_csv(self, table: QTableWidget, prefix: str):
+        if table.rowCount() == 0:
+            QMessageBox.warning(self, "Aviso", f"Não há dados de {prefix.lower()} na tabela para exportar.")
+            return
+
+        target = self.inp_target.text().strip() or "Alvo"
+        default_name = sanitize_filename(
+            f"{prefix}_{target}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+        )
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, f"Exportar {prefix} (CSV)", default_name, "CSV Files (*.csv)"
+        )
+        if file_path:
+            count = export_qtable_to_csv(table, file_path)
+            QMessageBox.information(
+                self, "Exportação Concluída",
+                f"{count} registro(s) exportado(s) para:\n{file_path}"
+            )
+
+    def _collect_visible_events(self) -> list[dict]:
+        collected = []
+        for r in range(self.tbl_events.rowCount()):
+            if self.tbl_events.isRowHidden(r):
+                continue
+            item = self.tbl_events.item(r, 0)
+            ev = item.data(Qt.ItemDataRole.UserRole) if item else None
+            if isinstance(ev, dict):
+                collected.append(ev)
+        return collected
+
+    def export_warranty_report(self):
+        target = self.inp_target.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Aviso", "Informe o computador alvo para gerar o laudo de garantia.")
+            self.inp_target.setFocus()
+            return
+
+        self.btn_warranty_report.setEnabled(False)
+        self.btn_warranty_report.setText("⏳ Coletando...")
+        self.run_worker("generate_warranty_report")
 
     def _toggle_event_date_range(self, range_text: str):
         is_custom = range_text == "Intervalo de data/hora (De / Até)"
@@ -718,6 +899,9 @@ class SystemManagerView(BaseView):
         self.btn_refresh_summary.setEnabled(True)
         self.btn_refresh_summary.setText("↻ Atualizar Resumo")
 
+        self.btn_warranty_report.setEnabled(True)
+        self.btn_warranty_report.setText("📄 Laudo Garantia (.txt)")
+
         self.btn_search_printers.setEnabled(True)
         self.btn_search_printers.setText("🔎 Buscar Impressoras")
 
@@ -761,6 +945,9 @@ class SystemManagerView(BaseView):
             self.btn_refresh_summary.setEnabled(False)
             self.btn_refresh_summary.setText("Carregando...")
             self.lbl_summary_status.setText("Consultando eventos recentes...")
+        elif action_type == "generate_warranty_report":
+            self.btn_warranty_report.setEnabled(False)
+            self.btn_warranty_report.setText("⏳ Coletando...")
         elif action_type == "search_gpo_printers":
             self.btn_search_printers.setEnabled(False)
             self.btn_search_printers.setText("⏳ Buscando...")
@@ -910,6 +1097,35 @@ class SystemManagerView(BaseView):
 
         if action_type == "get_critical_summary":
             self.populate_critical_summary(data_list)
+            return
+
+        if action_type == "generate_warranty_report":
+            hw_info = data_list[0] if (data_list and isinstance(data_list[0], dict)) else {}
+            events_data = self._collect_visible_events()
+            period_label = self.cmb_ev_range.currentText()
+            if period_label == "Intervalo de data/hora (De / Até)":
+                period_label = (
+                    f"{self.dt_ev_from.dateTime().toString('dd/MM/yyyy HH:mm')} "
+                    f"até {self.dt_ev_to.dateTime().toString('dd/MM/yyyy HH:mm')}"
+                )
+            report_text = build_warranty_report_text(
+                target_pc=target,
+                hw_info=hw_info,
+                events=events_data,
+                log_name=self.cmb_ev_log.currentText(),
+                period_label=period_label,
+                technician=executor,
+            )
+            default_name = sanitize_filename(
+                f"Laudo_Garantia_{target}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
+            )
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Salvar Laudo Técnico de Garantia", default_name, "Text Files (*.txt)"
+            )
+            if file_path:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(report_text)
+                QMessageBox.information(self, "Laudo Gerado", f"Laudo salvo com sucesso em:\n{file_path}")
             return
 
         if action_type in ("kill_process", "manage_service", "search_gpo_printers", "flush_spooler", "clear_printer_queue", "remove_printer"):
