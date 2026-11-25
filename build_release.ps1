@@ -66,12 +66,18 @@ Write-Host "==========================================================" -Foregro
 
 # 1. Validacao dos Testes Automatizados antes do Build
 Write-Host "`n[1/5] Executando bateria de testes (pytest)..." -ForegroundColor Yellow
+Write-Host " -> Aplicando correções automáticas de lint (ruff --fix)..." -ForegroundColor Gray
+# Executa o ruff para corrigir problemas de lint automaticamente
+& python -m ruff check . --fix
+# Validacao de manifest.json dos scripts
+Write-Host " -> Gerando manifest.json dos scripts..." -ForegroundColor Gray
 & python generate_manifest.py
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERRO: Falha ao gerar o manifest.json dos scripts." -ForegroundColor Red
     exit 1
 }
-
+# Executa o pytest para validar os testes unitarios
+Write-Host " -> Executando testes unitários..." -ForegroundColor Gray
 & pytest -v
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERRO: O empacotamento foi abortado porque um ou mais testes falharam!" -ForegroundColor Red

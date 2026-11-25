@@ -449,6 +449,11 @@ class SoftwareView(BaseView):
         "microsoft.windowsterminal",
     )
 
+    def _open_glpi_config(self):
+        from gui.dialogs.dialogs import GlpiConfigDialog
+        dlg = GlpiConfigDialog(parent=self)
+        dlg.exec()
+
     def __init__(self, main_window_ref=None):
         super().__init__(main_window_ref)
         self.queue_manager = getattr(main_window_ref, "queue_manager", None) or TaskQueueManager(max_threads=5)
@@ -479,7 +484,7 @@ class SoftwareView(BaseView):
 
         self.inp_target = QLineEdit()
         self.inp_target.setFixedHeight(32)
-        self.inp_target.setPlaceholderText("Ex: HUL-WK-244377E ou 10.8.128.14")
+        self.inp_target.setPlaceholderText("Ex: HUL-WK-001122E ou 192.168.0.2")
         self.inp_target.setStyleSheet("padding: 0 10px;")
         self.inp_target.textChanged.connect(self._force_uppercase)
 
@@ -502,6 +507,15 @@ class SoftwareView(BaseView):
         self.btn_check_updates.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_check_updates.setStyleSheet("background-color: #f0ad4e; color: black; padding: 0 15px; font-weight: bold; border-radius: 4px;")
         self.btn_check_updates.clicked.connect(self.check_updates)
+
+        self.btn_glpi_config = QPushButton("⚙️ Config GLPI")
+        self.btn_glpi_config.setFixedHeight(32)
+        self.btn_glpi_config.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_glpi_config.setToolTip("Configurar credenciais OAuth do GLPI Agent (DPAPI)")
+        self.btn_glpi_config.setStyleSheet("background-color: #666; color: white; padding: 0 15px; font-weight: bold; border-radius: 4px;")
+        self.btn_glpi_config.clicked.connect(self._open_glpi_config)
+
+        target_layout.addWidget(self.btn_glpi_config)
 
         target_layout.addWidget(QLabel("Alvo:"))
         target_layout.addWidget(self.inp_target)

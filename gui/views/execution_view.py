@@ -340,7 +340,7 @@ class ExecutionView(BaseView):
 
         self.target_input = QLineEdit()
         self.target_input.setFixedHeight(32)
-        self.target_input.setPlaceholderText("Ex: localhost, 10.8.128.14, HUL-WK-244377E...")
+        self.target_input.setPlaceholderText("Ex: LOCALHOST, 192.168.0.2, HUL-WK-001122E...")
         self.target_input.setStyleSheet("padding: 0 10px;")
         self.target_input.textChanged.connect(self._force_uppercase)
 
@@ -561,8 +561,8 @@ class ExecutionView(BaseView):
         elif escolha.startswith("2."):
             param, ok_p = QInputDialog.getText(
                 self, "Faixa de Sub-rede",
-                "Informe CIDR (ex: 10.8.128.0/26) ou faixa final (ex: 10.8.128.1-40):",
-                QLineEdit.EchoMode.Normal, "10.8.128.1-30"
+                "Informe CIDR (ex: 192.168.0.0/24) ou faixa final (ex: 192.168.0.1-40):",
+                QLineEdit.EchoMode.Normal, "192.168.0.1-30"
             )
             mode = "subnet"
         else:
@@ -575,8 +575,8 @@ class ExecutionView(BaseView):
                 return
             sub_val, ok_s = QInputDialog.getText(
                 self, "Sub-rede Alvo",
-                "Informe a sub-rede (ex: 10.8.128.0/24 ou 10.8.128.1-254):",
-                QLineEdit.EchoMode.Normal, "10.8.128.0/24"
+                "Informe a sub-rede (ex: 192.168.0.0/24 ou 192.168.0.1-254):",
+                QLineEdit.EchoMode.Normal, "192.168.0.0/24"
             )
             if not ok_s:
                 return

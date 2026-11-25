@@ -8,7 +8,8 @@ def test_ruff_linter_passes():
     result = subprocess.run(
         [sys.executable, "-m", "ruff", "check", "."],
         capture_output=True,
-        text=True
+        text=True,
+        encoding="utf-8"
     )
 
     assert result.returncode == 0, f"O linter encontrou problemas no código:\n{result.stdout}"
