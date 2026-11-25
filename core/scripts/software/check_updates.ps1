@@ -31,28 +31,21 @@ if ($Engine -eq "Chocolatey") {
     }
 
     if ($wingetCmd -and (Test-Path $wingetCmd)) {
-        $out = @(& $wingetCmd upgrade --nowarn --accept-source-agreements --disable-interactivity 2>$null)
-        $start = $false; $idPos = -1; $verPos = -1; $availPos = -1
+        # NOVO (R07): Uso de JSON em vez de Substring
+        $jsonOut = & $wingetCmd upgrade --include-unknown --output json --accept-source-agreements --disable-interactivity 2>$null
+        $jsonStr = $jsonOut -join "`n"
 
-        foreach ($line in $out) {
-            if ($null -eq $line) { continue }
-            $lineStr = $line.ToString()
-            if ($lineStr -match "msstore" -or [string]::IsNullOrWhiteSpace($lineStr)) { continue }
-
-            if ($lineStr -match '^Nome' -or $lineStr -match '^Name') {
-                $idPos    = $lineStr.IndexOf("Id", [System.StringComparison]::OrdinalIgnoreCase)
-                $verPos   = $lineStr.IndexOf("Vers", [System.StringComparison]::OrdinalIgnoreCase)
-                $availPos = $lineStr.IndexOf("Disp", [System.StringComparison]::OrdinalIgnoreCase)
-                if ($availPos -eq -1) { $availPos = $lineStr.IndexOf("Avail", [System.StringComparison]::OrdinalIgnoreCase) }
+        try {
+            $parsed = $jsonStr | ConvertFrom-Json
+            foreach ($src in $parsed.Sources) {
+                foreach ($pkg in $src.Packages) {
+                    if ($pkg.AvailableVersion) {
+                        $outdatedPkgs[$pkg.PackageIdentifier] = $pkg.AvailableVersion
+                    }
+                }
             }
-            if ($lineStr -match '^---') { $start = $true; continue }
-
-            if ($start -and $idPos -gt 0 -and $verPos -gt $idPos -and $availPos -gt $verPos -and $lineStr.Length -gt $availPos) {
-                $id = $lineStr.Substring($idPos, $verPos - $idPos).Trim()
-                $rest = $lineStr.Substring($availPos).Trim()
-                $avail = ($rest -split '\s+')[0]
-                if ($id -and $avail) { $outdatedPkgs[$id] = $avail }
-            }
+        } catch {
+            # Se o JSON falhar, retorna vazio
         }
     }
 }

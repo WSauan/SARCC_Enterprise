@@ -54,38 +54,25 @@ if ($Engine -eq "Chocolatey") {
     }
 
     if ($wingetCmd -and (Test-Path $wingetCmd)) {
-        $out = @(& $wingetCmd list --nowarn --accept-source-agreements --disable-interactivity 2>$null)
-        $start = $false; $idPos = -1; $verPos = -1
+        # NOVO (R07): Uso de JSON em vez de Substring
+        $jsonOut = & $wingetCmd list --output json --accept-source-agreements --disable-interactivity 2>$null
+        $jsonStr = $jsonOut -join "`n"
 
-        foreach ($line in $out) {
-            if ($null -eq $line) { continue }
-            $lineStr = Repair-Mojibake ($line.ToString())
-            if ($lineStr -match "msstore" -or [string]::IsNullOrWhiteSpace($lineStr)) { continue }
-            if ($lineStr -match '^Nome' -or $lineStr -match '^Name') {
-                $idPos  = $lineStr.IndexOf("Id",   [System.StringComparison]::OrdinalIgnoreCase)
-                $verPos = $lineStr.IndexOf("Vers", [System.StringComparison]::OrdinalIgnoreCase)
-            }
-            if ($lineStr -match '^---') { $start = $true; continue }
-
-            if ($start -and $idPos -gt 0 -and $verPos -gt $idPos -and $lineStr.Length -gt $verPos) {
-                $name    = $lineStr.Substring(0, $idPos).Trim()
-                $id      = $lineStr.Substring($idPos, $verPos - $idPos).Trim()
-                $verRest = $lineStr.Substring($verPos).Trim()
-                $parts   = $verRest -split '\s+', 2
-                $ver     = if ($parts.Count -ge 1) { $parts[0] } else { "" }
-                $disp    = if ($parts.Count -ge 2) { $parts[1].Trim() } else { "" }
-                if ($disp -eq "winget") { $disp = "" }
-
-                if ($name -and $id) {
+        try {
+            $parsed = $jsonStr | ConvertFrom-Json
+            foreach ($src in $parsed.Sources) {
+                foreach ($pkg in $src.Packages) {
                     $allSoftware += [PSCustomObject]@{
-                        Id        = $id
-                        Name      = $name
-                        Version   = $ver
-                        Available = $disp
+                        Id        = $pkg.PackageIdentifier
+                        Name      = (Repair-Mojibake $pkg.PackageName)
+                        Version   = $pkg.InstalledVersion
+                        Available = if ($pkg.AvailableVersion) { $pkg.AvailableVersion } else { "" }
                         Origin    = "Winget"
                     }
                 }
             }
+        } catch {
+            # Se falhar o JSON, cai no fallback do registro
         }
     }
 
