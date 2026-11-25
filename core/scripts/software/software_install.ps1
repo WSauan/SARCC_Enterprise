@@ -461,12 +461,40 @@ try {
             if (-not (Test-Path $choco)) {
                 $LogData.Detalhes += "[Choco] Chocolatey não encontrado no computador alvo ($env:COMPUTERNAME). Instalando motor Chocolatey automaticamente..."
                 try {
-                    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-                    $wc = New-Object System.Net.WebClient
-                    $installScript = $wc.DownloadString('https://community.chocolatey.org/install.ps1')
-                    Invoke-Expression $installScript | Out-Null
+                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                    $chocoMsiUrl = "https://github.com/chocolatey/choco/releases/latest/download/chocolatey.x.x.x.nupkg" # URL base, veja nota abaixo
+                    $chocoMsiPath = Join-Path $env:TEMP "chocolatey_installer.msi"
+
+                    # O Chocolatey não tem um MSI "puro" oficial no GitHub Releases de forma direta.
+                    # A forma recomendada e mais segura pela própria documentação deles para CI/CD
+                    # é usar o script da comunidade com validação de hash, OU usar o gerenciador de pacotes do Windows.
+                    
+                    # COMO ESTAMOS EM 2026, a Microsoft já embute o Winget no Windows 10/11 por padrão.
+                    # A forma mais segura de instalar o Chocolatey se ele não existir é usando o Winget para isso!
+                    
+                    $wingetCmd = $null
+                    $realApp = Get-ChildItem "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                    if ($realApp) { $wingetCmd = $realApp.FullName }
+                    if (-not $wingetCmd) {
+                        $candidate = "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe"
+                        if (Test-Path $candidate) { $wingetCmd = $candidate }
+                    }
+
+                    if ($wingetCmd) {
+                        $LogData.Detalhes += "[Choco] Instalando Chocolatey via Winget (seguro e sempre atualizado)..."
+                        # O ID no Winget para o Chocolatey é 'Chocolatey.Chocolatey'
+                        $resW = Invoke-ProcessWithTimeout -FilePath $wingetCmd -ArgumentList @("install", "--id", "Chocolatey.Chocolatey", "--exact", "--silent", "--accept-package-agreements", "--accept-source-agreements") -TimeoutSeconds 120
+                        
+                        if ($resW.ExitCode -notin @(0, 3010, -1978335189)) { # -1978335189 = Já instalado
+                            $LogData.Detalhes += "[Choco] Falha ao instalar via Winget. ExitCode: $($resW.ExitCode)"
+                        } else {
+                            $LogData.Detalhes += "[Choco] Chocolatey instalado com sucesso via Winget."
+                        }
+                    } else {
+                        $LogData.Detalhes += "[Choco] Winget não encontrado. Não é possível instalar o Chocolatey com segurança sem ele."
+                    }
                 } catch {
-                    $LogData.Detalhes += "[Choco] Falha ao auto-instalar Chocolatey no alvo: $($_.Exception.Message)"
+                    $LogData.Detalhes += "[Choco] Falha ao auto-instalar Chocolatey: $($_.Exception.Message)"
                 }
             }
 
