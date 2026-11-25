@@ -119,7 +119,7 @@ class RemoteConnectionManager:
             "reason": reason
         }
 
-    def execute_script(self, target_pc: str, script_content: str) -> Dict[str, Any]:
+    def execute_script(self, target_pc: str, script_content: str, timeout_seconds: int = 300) -> Dict[str, Any]:
         start_time = time.time()
         resolved_target = resolve_target_hostname(target_pc) or str(target_pc or "").strip()
 
@@ -133,7 +133,7 @@ class RemoteConnectionManager:
         ]
 
         if is_local:
-            result = self._run_local(script_seguro)
+            result = self._run_local(script_seguro, timeout_seconds=timeout_seconds)
         else:
             probe = self.probe_host(resolved_target, port_timeout=0.8)
             if not probe["reachable"]:
@@ -146,21 +146,22 @@ class RemoteConnectionManager:
 
             if probe["winrm_open"]:
                 try:
-                    result = self._run_native_remoting(resolved_target, script_seguro)
+                    result = self._run_native_remoting(resolved_target, script_seguro, timeout_seconds=timeout_seconds)
                 except Exception as e_native:
-                    result = self._run_wmi(resolved_target, script_seguro, str(e_native))
+                    result = self._run_wmi(resolved_target, script_seguro, str(e_native), timeout_seconds=timeout_seconds)
             else:
                 result = self._run_wmi(
                     resolved_target,
                     script_seguro,
-                    "A porta WinRM (5985) está fechada/bloqueada pelo Firewall."
+                    "A porta WinRM (5985) está fechada/bloqueada pelo Firewall.",
+                    timeout_seconds=timeout_seconds
                 )
 
         elapsed = time.time() - start_time
         result["log_saida"] += f"\n\n[⏱️ Tempo de Execução da Conexão: {elapsed:.2f} segundos]"
         return result
 
-    def _run_local(self, script_content: str) -> Dict[str, Any]:
+    def _run_local(self, script_content: str, timeout_seconds: int = 300) -> Dict[str, Any]:
         local_dir = os.path.join(os.environ.get("TEMP", "C:\\Windows\\Temp"), "SARCC_Cache")
         os.makedirs(local_dir, exist_ok=True)
         script_id = uuid.uuid4().hex[:8]
@@ -170,13 +171,21 @@ class RemoteConnectionManager:
             with open(local_script, "w", encoding="utf-8-sig") as f:
                 f.write(script_content)
 
-            result = subprocess.run(
-                [
-                    "powershell.exe", "-ExecutionPolicy", "Bypass",
-                    "-NoProfile", "-NonInteractive", "-File", local_script
-                ],
-                capture_output=True, text=False, creationflags=subprocess.CREATE_NO_WINDOW
-            )
+            try:
+                result = subprocess.run(
+                    [
+                        "powershell.exe", "-ExecutionPolicy", "Bypass",
+                        "-NoProfile", "-NonInteractive", "-File", local_script
+                    ],
+                    capture_output=True, text=False, creationflags=subprocess.CREATE_NO_WINDOW,
+                    timeout=timeout_seconds
+                )
+            except subprocess.TimeoutExpired:
+                return {
+                    "status": "Erro Fatal",
+                    "log_saida": f"Tempo limite de execução local excedido ({timeout_seconds}s). O processo foi abortado.",
+                    "json_data": {}
+                }
             return self._process_output(
                 self._smart_decode(result.stdout),
                 self._smart_decode(result.stderr),
@@ -188,7 +197,7 @@ class RemoteConnectionManager:
             except OSError as e:
                 log.debug(f"Falha ao remover script local temporário: {e}")
 
-    def _run_native_remoting(self, target_pc: str, script_content: str) -> Dict[str, Any]:
+    def _run_native_remoting(self, target_pc: str, script_content: str, timeout_seconds: int = 300) -> Dict[str, Any]:
         b64_script = base64.b64encode(script_content.encode("utf-8")).decode("utf-8")
 
         local_dir = os.path.join(os.environ.get("TEMP", "C:\\Windows\\Temp"), "SARCC_Cache")
@@ -215,13 +224,21 @@ class RemoteConnectionManager:
             with open(local_wrapper, "w", encoding="utf-8") as f:
                 f.write(ps_wrapper)
 
-            result = subprocess.run(
-                [
-                    "powershell.exe", "-ExecutionPolicy", "Bypass",
-                    "-NoProfile", "-NonInteractive", "-File", local_wrapper
-                ],
-                capture_output=True, text=False, creationflags=subprocess.CREATE_NO_WINDOW
-            )
+            try:
+                result = subprocess.run(
+                    [
+                        "powershell.exe", "-ExecutionPolicy", "Bypass",
+                        "-NoProfile", "-NonInteractive", "-File", local_wrapper
+                    ],
+                    capture_output=True, text=False, creationflags=subprocess.CREATE_NO_WINDOW,
+                    timeout=timeout_seconds
+                )
+            except subprocess.TimeoutExpired:
+                return {
+                    "status": "Erro Fatal",
+                    "log_saida": f"Tempo limite do WinRM excedido ({timeout_seconds}s). O comando pode estar travado no alvo.",
+                    "json_data": {}
+                }
 
             out = self._smart_decode(result.stdout)
             err = self._smart_decode(result.stderr)
@@ -236,7 +253,7 @@ class RemoteConnectionManager:
             except OSError as e:
                 log.debug(f"Falha ao remover wrapper WinRM temporário: {e}")
 
-    def _run_wmi(self, target_pc: str, script_content: str, previous_error: str) -> Dict[str, Any]:
+    def _run_wmi(self, target_pc: str, script_content: str, previous_error: str, timeout_seconds: int = 300) -> Dict[str, Any]:
         b64_script = base64.b64encode(script_content.encode("utf-8")).decode("utf-8")
 
         local_dir = os.path.join(os.environ.get("TEMP", "C:\\Windows\\Temp"), "SARCC_Cache")
@@ -300,13 +317,21 @@ class RemoteConnectionManager:
             with open(local_wrapper, "w", encoding="utf-8") as f:
                 f.write(wmi_wrapper)
 
-            result = subprocess.run(
-                [
-                    "powershell.exe", "-ExecutionPolicy", "Bypass",
-                    "-NoProfile", "-NonInteractive", "-File", local_wrapper
-                ],
-                capture_output=True, text=False, creationflags=subprocess.CREATE_NO_WINDOW
-            )
+            try:
+                result = subprocess.run(
+                    [
+                        "powershell.exe", "-ExecutionPolicy", "Bypass",
+                        "-NoProfile", "-NonInteractive", "-File", local_wrapper
+                    ],
+                    capture_output=True, text=False, creationflags=subprocess.CREATE_NO_WINDOW,
+                    timeout=timeout_seconds
+                )
+            except subprocess.TimeoutExpired:
+                return {
+                    "status": "Erro Fatal",
+                    "log_saida": f"Tempo limite do WMI excedido ({timeout_seconds}s). O comando pode estar travado no alvo.",
+                    "json_data": {}
+                }
 
             out = self._smart_decode(result.stdout)
             err = self._smart_decode(result.stderr)

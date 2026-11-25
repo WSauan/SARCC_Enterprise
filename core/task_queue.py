@@ -9,6 +9,7 @@ from core.remote_connection import RemoteConnectionManager
 from core.database import DatabaseManager
 from core.config import get_max_threads
 from core.logger import get_logger
+from core.ps_loader import extract_script_timeout
 
 log = get_logger(__name__)
 
@@ -60,11 +61,12 @@ class TaskWorker(threading.Thread):
                 self.task_queue.task_done()
                 break
 
-            target_pc, script_name, script_content, module_name, credentials, script_b64, signals = task
+            # Desempacotando a tupla corretamente com o timeout e o signals (R06)
+            target_pc, script_name, script_content, module_name, credentials, script_b64, signals, timeout_seconds = task
             conn = RemoteConnectionManager()
             executor = os.environ.get("USERNAME", "Desconhecido")
 
-            # --- 1. Injeção Base64 Segura (Credenciais) ---
+            # Injeção Base64 Segura (Credenciais)
             if credentials and isinstance(credentials, dict):
                 def _b64(s: str) -> str:
                     return b64.b64encode((s or "").encode("utf-8")).decode("ascii").replace("\n", "")
@@ -77,14 +79,17 @@ class TaskWorker(threading.Thread):
                 script_content = script_content.replace("[[ADMIN_PASS]]", pass_b64)
                 script_content = script_content.replace("[[VNC_PASS]]", vnc_b64)
 
-            # --- 2. Injeção Base64 de Scripts Grandes (Bypass do WinError 206) ---
+            # Injeção Base64 de Scripts Grandes (Bypass do WinError 206)
             if script_b64:
                 script_content = script_content.replace("{{script_b64}}", script_b64)
 
             signals.started.emit(target_pc)
 
             try:
-                res = conn.execute_script(target_pc, script_content)
+                # --- NOVO: Sobrescreve o timeout se o script tiver a diretiva # @timeout: ---
+                timeout_final = extract_script_timeout(script_content, default_timeout=timeout_seconds)
+
+                res = conn.execute_script(target_pc, script_content, timeout_seconds=timeout_final)
                 status = res.get("status", "Pendente")
                 json_data = res.get("json_data", {})
                 if not isinstance(json_data, dict):
@@ -129,7 +134,7 @@ class TaskQueueManager:
             self.workers.append(worker)
 
     def add_task(self, target_pc, script_name, script_content, module_name="Execução Remota",
-                 credentials=None, script_b64=None, on_start=None, on_finish=None, on_error=None):
+                 credentials=None, script_b64=None, on_start=None, on_finish=None, on_error=None, timeout_seconds: int = 300):
         signals = WorkerSignals()
         if on_start:
             signals.started.connect(on_start)
@@ -137,7 +142,9 @@ class TaskQueueManager:
             signals.finished.connect(on_finish)
         if on_error:
             signals.error.connect(on_error)
-        self.task_queue.put((target_pc, script_name, script_content, module_name, credentials, script_b64, signals))
+        
+        # Adiciona o signals e o timeout na tupla da fila
+        self.task_queue.put((target_pc, script_name, script_content, module_name, credentials, script_b64, signals, timeout_seconds))
 
     def shutdown(self, timeout: float = 2.0):
         log.info(f"TaskQueueManager: encerrando {len(self.workers)} worker(s)...")

@@ -3,6 +3,7 @@ from core.logger import get_logger
 from core.config import get_ps_scripts_dir, SHARE_ROOT, SERVER_ROOT, ZABBIX_IP, GLPI_URL
 import hashlib
 import json
+import re
 
 log = get_logger(__name__)
 
@@ -24,7 +25,6 @@ def load_ps_template(category: str, template_name: str, **kwargs) -> str:
     if manifest_path.exists():
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            # A chave no manifesto é o caminho relativo (ex: dashboard/telemetry.ps1)
             rel_key = script_path.relative_to(base_dir).as_posix()
             
             expected_hash = manifest.get(rel_key)
@@ -38,21 +38,19 @@ def load_ps_template(category: str, template_name: str, **kwargs) -> str:
                     raise PsTemplateError(error_msg)
         except json.JSONDecodeError:
             log.error("Erro ao ler manifest.json. Verifique a sintaxe do arquivo.")
-            # aborta por segurança.
             raise PsTemplateError("Manifesto de integridade corrompido.")
 
     try:
         with open(script_path, "r", encoding="utf-8-sig") as f:
             content = f.read().lstrip("\ufeff")
 
-        # --- Injeção automática de variáveis de infraestrutura (R05) ---
+        # Injeção automática de variáveis de infraestrutura (R05)
         global_vars = {
             "share_root": SHARE_ROOT,
             "server_root": SERVER_ROOT,
             "zabbix_ip": ZABBIX_IP,
             "glpi_url": GLPI_URL,
         }
-        # kwargs sobrescrevem as globais se necessário
         all_vars = {**global_vars, **kwargs}
 
         for key, value in all_vars.items():
@@ -66,3 +64,12 @@ def load_ps_template(category: str, template_name: str, **kwargs) -> str:
     except Exception as e:
         log.error(f"Falha ao processar o template {script_path}: {e}", exc_info=True)
         raise PsTemplateError(f"Falha ao ler o ficheiro: {e}")
+
+
+# --- Função adicionada FORA da classe, no final do arquivo (R06) ---
+def extract_script_timeout(script_content: str, default_timeout: int = 300) -> int:
+    """Lê a diretiva # @timeout: <segundos> no topo do script."""
+    match = re.search(r"^#\s*@timeout:\s*(\d+)", script_content, re.MULTILINE)
+    if match:
+        return int(match.group(1))
+    return default_timeout
