@@ -1,25 +1,36 @@
+import os
 import hashlib
 import json
-from pathlib import Path
 
 def generate_manifest():
-    scripts_dir = Path("core/scripts")
+    scripts_dir = "core/scripts"
     manifest = {}
     
     print(f"Gerando manifesto para scripts em {scripts_dir}...")
     
-    for ps1 in scripts_dir.rglob("*.ps1"):
-        if "backup" in str(ps1).lower():
+    # Varre o diretório recursivamente
+    for root, dirs, files in os.walk(scripts_dir):
+        # Ignora pastas de backup
+        if "backup" in root.lower() or "Scripts " in root:
             continue
-        # Gera o hash do arquivo
-        hash_sha256 = hashlib.sha256(ps1.read_bytes()).hexdigest()
-        # Usa o caminho relativo como chave (ex: dashboard/repair_agent.ps1)
-        rel_path = ps1.relative_to(scripts_dir).as_posix()
-        manifest[rel_path] = hash_sha256
-        print(f"  [OK] {rel_path} -> {hash_sha256[:8]}...")
+            
+        for file in files:
+            if file.endswith(".ps1"):
+                # Caminho completo e relativo
+                file_path = os.path.join(root, file)
+                rel_path = os.path.relpath(file_path, scripts_dir).replace("\\", "/")
+                
+                # Gera o hash
+                with open(file_path, "rb") as f:
+                    hash_sha256 = hashlib.sha256(f.read()).hexdigest()
+                
+                manifest[rel_path] = hash_sha256
+                print(f"  [OK] {rel_path} -> {hash_sha256[:8]}...")
+                
+    manifest_path = os.path.join(scripts_dir, "manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=4)
         
-    manifest_path = scripts_dir / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=4), encoding="utf-8")
     print(f"\nManifesto salvo em: {manifest_path}")
     print(f"Total de scripts protegidos: {len(manifest)}")
 
