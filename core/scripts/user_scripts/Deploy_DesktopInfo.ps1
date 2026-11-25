@@ -3,7 +3,7 @@
     Deploy DesktopInfo (versão verbosa): copia para C:\Program Files\DesktopInfo e registra startup.
 .NOTES
     - Requer [REQUIRE_CREDENTIALS]: SARCC injeta credenciais em Base64 decodificadas apenas em memória.
-    - Fonte: \\hul-vp-imagem-cc\netshared\DesktopInfo\DesktopInfoHUL.exe
+    - Fonte: {{share_root}}\DesktopInfo\DesktopInfoHUL.exe
     - Registra via HKLM Run key (inicia no próximo logon do usuário).
 #>
 
@@ -23,7 +23,7 @@ if ($AdminUserRaw.StartsWith("[[")) {
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-$ShareServerPath   = "\\hul-vp-imagem-cc\netshared"
+$ShareServerPath   = "{{share_root}}"
 $DriveLetter       = "Z"
 $RemoteSubDir      = "DesktopInfo"
 $RemoteExeName     = "DesktopInfoHUL.exe"
@@ -54,8 +54,8 @@ try {
             Remove-PSDrive -Name $DriveLetter -Force -ErrorAction SilentlyContinue
             $LogData.Detalhes += "      -> PSDrive '$DriveLetter:' anterior removido."
         }
-        & cmd.exe /c "net use $ShareServerPath /delete /y >nul 2>&1"
-        & cmd.exe /c "net use \\hul-vp-imagem-cc\IPC$ /delete /y >nul 2>&1"
+        & cmd.exe /c "net use {{share_root}} /delete /y >nul 2>&1"
+        & cmd.exe /c "net use {{server_root}}\C$ /delete /y >nul 2>&1"
     } catch {
         $LogData.Detalhes += "      -> Aviso ao limpar sessão SMB prévia: $($_.Exception.Message)"
     }

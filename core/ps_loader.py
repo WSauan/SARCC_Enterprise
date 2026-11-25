@@ -1,6 +1,6 @@
 from pathlib import Path
 from core.logger import get_logger
-from core.config import get_ps_scripts_dir
+from core.config import get_ps_scripts_dir, SHARE_ROOT, SERVER_ROOT, ZABBIX_IP, GLPI_URL
 import hashlib
 import json
 
@@ -45,7 +45,17 @@ def load_ps_template(category: str, template_name: str, **kwargs) -> str:
         with open(script_path, "r", encoding="utf-8-sig") as f:
             content = f.read().lstrip("\ufeff")
 
-        for key, value in kwargs.items():
+        # --- Injeção automática de variáveis de infraestrutura (R05) ---
+        global_vars = {
+            "share_root": SHARE_ROOT,
+            "server_root": SERVER_ROOT,
+            "zabbix_ip": ZABBIX_IP,
+            "glpi_url": GLPI_URL,
+        }
+        # kwargs sobrescrevem as globais se necessário
+        all_vars = {**global_vars, **kwargs}
+
+        for key, value in all_vars.items():
             placeholder = f"{{{{{key}}}}}"
             if isinstance(value, bool):
                 val_str = "$true" if value else "$false"

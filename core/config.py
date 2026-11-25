@@ -5,7 +5,12 @@ from pathlib import Path
 APP_NAME = "SARCC"
 APP_ORGANIZATION = "SARCC"
 
+# --- Configurações de Infraestrutura (R05) ---
+SERVER_ROOT: str = os.environ.get("SARCC_SERVER_ROOT", r"\\hul-vp-imagem-cc")
 SHARE_ROOT: str = os.environ.get("SARCC_SHARE", r"\\hul-vp-imagem-cc\netshared")
+ZABBIX_IP: str = os.environ.get("SARCC_ZABBIX_IP", "10.8.245.12")
+GLPI_URL: str = os.environ.get("SARCC_GLPI_URL", "https://chamados.hul-ufs.ebserh/front/inventory.php")
+
 SHARE_SOFTWARE: str = rf"{SHARE_ROOT}\Softwares"
 SHARE_DRIVERS: str = rf"{SHARE_ROOT}\Drivers"
 SHARE_WINGET: str = rf"{SHARE_ROOT}\Winget"

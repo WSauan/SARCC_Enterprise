@@ -64,7 +64,7 @@ try {
     }
 
     $endpoints = @(
-        @{ Name = "Zabbix Server";     Host = "10.8.245.12";             Port = 10050 },
+        @{ Name = "Zabbix Server";     Host = "{{zabbix_ip}}";             Port = 10050 },
         @{ Name = "GLPI Inventory";    Host = "chamados.hul-ufs.ebserh"; Port = 443   },
         @{ Name = "Repositório SMB";   Host = "hul-vp-imagem-cc";        Port = 445   }
     )

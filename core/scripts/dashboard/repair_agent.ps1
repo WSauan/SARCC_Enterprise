@@ -7,7 +7,7 @@ try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $ErrorActionPreference = 'Stop'
 
 $AgentTarget     = "{{agent_target}}".Trim().ToLower()
-$ShareServerPath = "\\hul-vp-imagem-cc\netshared"
+$ShareServerPath = "{{share_root}}"
 $DriveLetter     = "Z"
 $LocalTempDir    = "C:\Windows\Temp"
 
@@ -79,7 +79,7 @@ function Repair-ZabbixAgent {
     $configSource = Join-Path $root "zabbix_agent2.conf"
 
     # IP oficial do servidor Zabbix HUL (lê do .conf se disponível)
-    $ZabbixServer = "10.8.245.12"
+    $ZabbixServer = "{{zabbix_ip}}"
     if (Test-Path -LiteralPath $configSource) {
         $confLines = Get-Content -LiteralPath $configSource -ErrorAction SilentlyContinue
         foreach ($line in $confLines) {
@@ -367,9 +367,6 @@ try {
 } finally {
     if ($driveCreated) {
         Remove-PSDrive -Name $DriveLetter -Force -ErrorAction SilentlyContinue
-    }
-    if (-not $UseContaMaquina) {
-        & cmd.exe /c "net use `"$ShareServerPath`" /delete /y >nul 2>&1"
     }
     $LogData.Fim = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     $LogData | ConvertTo-Json -Depth 3 -Compress | Write-Output
