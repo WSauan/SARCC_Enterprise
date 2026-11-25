@@ -9,6 +9,8 @@ def generate_manifest():
     print(f"Gerando manifesto para scripts em {scripts_dir}...")
     
     for ps1 in scripts_dir.rglob("*.ps1"):
+        if "backup" in str(ps1).lower():
+            continue
         # Gera o hash do arquivo
         hash_sha256 = hashlib.sha256(ps1.read_bytes()).hexdigest()
         # Usa o caminho relativo como chave (ex: dashboard/repair_agent.ps1)

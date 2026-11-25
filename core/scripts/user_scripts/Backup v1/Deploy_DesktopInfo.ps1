@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
-    Deploy DesktopInfo (versão verbosa): copia para C:\Program Files\DesktopInfo e registra startup.
+    Deploy DesktopInfo: copia para C:\Program Files\DesktopInfo e registra startup.
 .NOTES
-    - Requer [REQUIRE_CREDENTIALS]: SARCC injeta credenciais em Base64 decodificadas apenas em memória.
+    - Requer [REQUIRE_CREDENTIALS]: SARCC injeta INJECT_USER_AUTO / INJECT_PASS_AUTO
     - Fonte: \\hul-vp-imagem-cc\netshared\DesktopInfo\DesktopInfoHUL.exe
     - Registra via HKLM Run key (inicia no próximo logon do usuário).
 #>
@@ -10,6 +10,9 @@
 $AdminUserRaw = '[[ADMIN_USER]]'
 $AdminPassRaw = '[[ADMIN_PASS]]'
 
+# --- Detecta modo de execução ---
+# Se ainda há "[[..." → SARCC NÃO injetou credencial → modo conta-máquina (SYSTEM)
+# Se já virou Base64 → SARCC injetou → decodifica em runtime
 if ($AdminUserRaw.StartsWith("[[")) {
     $UseContaMaquina = $true
     $AdminUser = ""
@@ -45,43 +48,25 @@ $LogData = @{
 $driveCreated = $false
 
 try {
-    $LogData.Detalhes += "[INFO] Alvo: $env:COMPUTERNAME | Usuário atual: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
-
-    # --- [0/6] Preparar sessão SMB e montar drive ---
+    # --- [0/6] Montar drive com credencial ---
     $LogData.Detalhes += "[0/6] Montando compartilhamento ..."
-    try {
-        if (Get-PSDrive -Name $DriveLetter -ErrorAction SilentlyContinue) {
-            Remove-PSDrive -Name $DriveLetter -Force -ErrorAction SilentlyContinue
-            $LogData.Detalhes += "      -> PSDrive '$DriveLetter:' anterior removido."
-        }
-        & cmd.exe /c "net use $ShareServerPath /delete /y >nul 2>&1"
-        & cmd.exe /c "net use \\hul-vp-imagem-cc\IPC$ /delete /y >nul 2>&1"
-    } catch {
-        $LogData.Detalhes += "      -> Aviso ao limpar sessão SMB prévia: $($_.Exception.Message)"
+    if (Get-PSDrive -Name $DriveLetter -ErrorAction SilentlyContinue) {
+        Remove-PSDrive -Name $DriveLetter -Force -ErrorAction SilentlyContinue
     }
-
-    if ($UseContaMaquina) {
+        if ($UseContaMaquina) {
+        # SYSTEM / conta-máquina (Kerberos assume a identidade da máquina)
         $LogData.Detalhes += "      -> Modo conta-máquina (SYSTEM)"
-        try {
-            $null = New-PSDrive -Name $DriveLetter -PSProvider FileSystem `
-                                -Root $ShareServerPath `
-                                -Scope Global -ErrorAction Stop
-        } catch {
-            $LogData.Detalhes += "      !! Falha New-PSDrive conta-máquina: $($_.Exception.Message)"
-            throw
-        }
+        $null = New-PSDrive -Name $DriveLetter -PSProvider FileSystem `
+                            -Root $ShareServerPath `
+                            -Scope Global -ErrorAction Stop
     } else {
+        # SARCC ativo: credencial explícita injetada em memória
         $LogData.Detalhes += "      -> Modo credencial explícita ($AdminUser)"
-        try {
-            $secPass = ConvertTo-SecureString $AdminPass -AsPlainText -Force
-            $cred    = New-Object System.Management.Automation.PSCredential($AdminUser, $secPass)
-            $null = New-PSDrive -Name $DriveLetter -PSProvider FileSystem `
-                                -Root $ShareServerPath -Credential $cred `
-                                -Scope Global -ErrorAction Stop
-        } catch {
-            $LogData.Detalhes += "      !! Falha New-PSDrive com credencial ($AdminUser): $($_.Exception.Message)"
-            throw
-        }
+        $secPass = ConvertTo-SecureString $AdminPass -AsPlainText -Force
+        $cred    = New-Object System.Management.Automation.PSCredential($AdminUser, $secPass)
+        $null = New-PSDrive -Name $DriveLetter -PSProvider FileSystem `
+                            -Root $ShareServerPath -Credential $cred `
+                            -Scope Global -ErrorAction Stop
     }
     $driveCreated = $true
 
@@ -96,52 +81,32 @@ try {
 
     # --- [1/6] Encerrar instância anterior ---
     $LogData.Detalhes += "[1/6] Encerrando instância anterior (se houver) ..."
-    try {
-        $running = Get-Process -Name $ProcessMatch -ErrorAction SilentlyContinue
-        if ($running) {
-            $running | Stop-Process -Force -ErrorAction Stop
-            Start-Sleep -Seconds 2
-            $LogData.Detalhes += "      -> $($running.Count) processo(s) encerrado(s)."
-        } else {
-            $LogData.Detalhes += "      -> Nenhum processo ativo."
-        }
-    } catch {
-        $LogData.Detalhes += "      !! Falha ao encerrar processo anterior: $($_.Exception.Message)"
-        throw
+    $running = Get-Process -Name $ProcessMatch -ErrorAction SilentlyContinue
+    if ($running) {
+        $running | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+        $LogData.Detalhes += "      -> $($running.Count) processo(s) encerrado(s)."
+    } else {
+        $LogData.Detalhes += "      -> Nenhum processo ativo."
     }
 
     # --- [2/6] Preparar pasta de destino ---
     $LogData.Detalhes += "[2/6] Preparando pasta de instalação ..."
-    try {
-        if (-not (Test-Path -LiteralPath $InstallDir)) {
-            New-Item -ItemType Directory -Path $InstallDir -Force -ErrorAction Stop | Out-Null
-        }
-        $LogData.Detalhes += "      -> $InstallDir"
-    } catch {
-        $LogData.Detalhes += "      !! Falha ao criar pasta de destino '$InstallDir': $($_.Exception.Message)"
-        throw
+    if (-not (Test-Path -LiteralPath $InstallDir)) {
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
+    $LogData.Detalhes += "      -> $InstallDir"
 
     # --- [3/6] Copiar arquivos (exe + ini, se existir) ---
     $LogData.Detalhes += "[3/6] Copiando arquivos ..."
     $localExe = Join-Path $InstallDir $InstallExeName
-    try {
-        Copy-Item -LiteralPath $remoteExe -Destination $localExe -Force -ErrorAction Stop
-        $LogData.Detalhes += "      -> $RemoteExeName copiado."
-    } catch {
-        $LogData.Detalhes += "      !! Falha ao copiar '$remoteExe' para '$localExe': $($_.Exception.Message)"
-        throw
-    }
+    Copy-Item -LiteralPath $remoteExe -Destination $localExe -Force -ErrorAction Stop
+    $LogData.Detalhes += "      -> $RemoteExeName copiado."
 
     if (Test-Path -LiteralPath $remoteIni) {
-        try {
-            $localIni = Join-Path $InstallDir "DesktopInfo.ini"
-            Copy-Item -LiteralPath $remoteIni -Destination $localIni -Force -ErrorAction Stop
-            $LogData.Detalhes += "      -> DesktopInfo.ini copiado."
-        } catch {
-            $LogData.Detalhes += "      !! Falha ao copiar DesktopInfo.ini: $($_.Exception.Message)"
-            throw
-        }
+        $localIni = Join-Path $InstallDir "DesktopInfo.ini"
+        Copy-Item -LiteralPath $remoteIni -Destination $localIni -Force -ErrorAction Stop
+        $LogData.Detalhes += "      -> DesktopInfo.ini copiado."
     } else {
         $LogData.Detalhes += "      -> (sem .ini na pasta de origem; usando defaults)"
     }
@@ -149,15 +114,12 @@ try {
     # --- [4/6] Registrar startup no registro ---
     $LogData.Detalhes += "[4/6] Registrando startup no HKLM Run ..."
     $runValue = "`"$localExe`""
-    try {
-        Set-ItemProperty -Path $RunKeyPath -Name $RunKeyName -Value $runValue -Force -ErrorAction Stop
-        $LogData.Detalhes += "      -> $RunKeyName = $runValue"
-    } catch {
-        $LogData.Detalhes += "      !! Falha ao gravar chave de registro '$RunKeyPath': $($_.Exception.Message)"
-        throw
-    }
+    Set-ItemProperty -Path $RunKeyPath -Name $RunKeyName -Value $runValue -Force -ErrorAction Stop
+    $LogData.Detalhes += "      -> $RunKeyName = $runValue"
 
     # --- [5/6] Iniciar imediatamente (se possível) ---
+    # Nota: via WinRM o processo inicia na Session 0 e pode não aparecer
+    # na tela do usuário até o próximo logon. Isso é limitação do WinRM.
     $LogData.Detalhes += "[5/6] Tentando iniciar agora ..."
     try {
         Start-Process -FilePath $localExe -ErrorAction Stop
@@ -183,12 +145,10 @@ try {
 } catch {
     $LogData.StatusFinal = "ERRO FATAL"
     $LogData.Mensagem = "Falha: $($_.Exception.Message)"
-    $LogData.Detalhes += "ERRO: $($_.Exception.Message)"
     $LogData.Detalhes += "EXCEÇÃO: $($_.ScriptStackTrace)"
 } finally {
     if ($driveCreated) {
-        try { Remove-PSDrive -Name $DriveLetter -Force -ErrorAction SilentlyContinue } catch { }
-        try { & cmd.exe /c "net use $ShareServerPath /delete /y >nul 2>&1" } catch { }
+        Remove-PSDrive -Name $DriveLetter -Force -ErrorAction SilentlyContinue
     }
     $LogData.Fim = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     $LogData | ConvertTo-Json -Depth 3 -Compress | Write-Output
