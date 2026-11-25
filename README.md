@@ -51,7 +51,7 @@ SARCC_Enterprise/
 - **Status Real de Sessões e Logoff Seletivo:** Identificação de sessões **Ativo**, **Desconectado** e **Em 2º Plano** via `quser`, colunas redimensionáveis na tabela de usuários e encerramento seletivo por usuário.
 - **Monitoramento de Agentes e Estado:** Validação em tempo real de Zabbix Agent 2, GLPI Agent, Desktop Info, RDP, AnyDesk (com extração automática do ID numérico), UltraVNC, versão do **Winget** e alerta de **Reboot Pendente** (`WU`, `CBS`, `PFR`).
 - **Reparo e Deploy Automatizado de Agentes (1 Clique):**
-  - **Zabbix Agent 2:** Instala ou reconfigura o serviço lendo dinamicamente o IP do servidor (`10.8.245.12`) a partir do `.conf` da rede, reconstrói os contadores de desempenho (`lodctr /R`) e configura *Auto-Healing* (`sc.exe failure`).
+  - **Zabbix Agent 2:** Instala ou reconfigura o serviço lendo dinamicamente o IP do servidor (`<IP_DO_SERVIDOR_ZABBIX>`) a partir do `.conf` da rede, reconstrói os contadores de desempenho (`lodctr /R`) e configura *Auto-Healing* (`sc.exe failure`).
   - **UltraVNC Server:** Executa instalação *Stealth*, aplica `ultravnc.ini` em `ProgramData` e `Program Files`, importa permissões `MSLogonACL` e garante a regra de firewall na porta `5900`.
   - **GLPI Agent:** Configura as chaves OAuth no Registro, instala/atualiza via MSI da rede e força a sincronização imediata do inventário (`--force`).
   - **Desktop Info:** Atualiza o binário em `C:\Program Files\Desktop Info`, registra no Startup e dispara o widget imediatamente na sessão interativa do usuário logado (contornando o isolamento da `Session 0` do WinRM).
@@ -72,7 +72,7 @@ SARCC_Enterprise/
 - **Instalação Online Blindada contra Bloqueios de GPO:**
   - *Winget:* Configuração automática do downloader `wininet`, provisionamento dinâmico do índice V2 (`source2.msix`) na conta `SYSTEM` e **Fallback via Manifesto Oficial do GitHub (`microsoft/winget-pkgs`)**.
   - *Chocolatey:* Busca local com **Fallback automático para a API Cloud OData** (mesmo sem Chocolatey instalado na estação do técnico) e auto-instalação do motor Chocolatey no endpoint alvo.
-- **Deploy Offline via Rede SMB (Double Hop):** Instalação silenciosa de pacotes `.msi` e `.exe` a partir do repositório de rede (`\\hul-vp-imagem-cc\netshared\Softwares`) usando mapeamento volátil autenticado.
+- **Deploy Offline via Rede SMB (Double Hop):** Instalação silenciosa de pacotes `.msi` e `.exe` a partir do repositório de rede (`\\servidor\share\Softwares`) usando mapeamento volátil autenticado.
 - **Desinstalação Multi-Camada:** Remoção via Winget/Chocolatey, remoção nativa de pacotes `AppX/MSIX` (`Remove-AppxPackage -AllUsers`), leitura de `QuietUninstallString` no Registro e busca de `uninstall.exe` locais.
 - **Extração e Deploy Inteligente de Drivers:** Coleta seletiva de drivers para a rede comparando a diretiva `DriverVer` dos arquivos `.inf` locais contra o servidor SMB, e instalação automatizada por fabricante/modelo de placa-mãe e categorias (Vídeo, Rede, Áudio, Bluetooth, Câmeras).
 
