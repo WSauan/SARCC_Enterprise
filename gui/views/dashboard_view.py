@@ -955,8 +955,31 @@ class DashboardView(BaseView):
         if credentials is None:
             return
 
+        glpi_oauth = None
+        if agent_key in ("glpi", "all"):
+            glpi_oauth = CredentialStore.load_glpi_oauth()
+            if not glpi_oauth:
+                from core.config import get_glpi_oauth
+                env_oauth = get_glpi_oauth()
+                if env_oauth["id"] and env_oauth["secret"]:
+                    glpi_oauth = env_oauth
+            
+            if not glpi_oauth or not glpi_oauth.get("id") or not glpi_oauth.get("secret"):
+                QMessageBox.warning(
+                    self, "OAuth GLPI Ausente",
+                    "Para reparar o GLPI, configure as credenciais via:\n\n"
+                    "1. Variáveis de ambiente: SARCC_GLPI_OAUTH_ID e SARCC_GLPI_OAUTH_SECRET\n"
+                    "2. Ou use o cofre DPAPI (menu lateral > Configurações)."
+                )
+                return
+
         try:
-            ps_script = load_ps_template("dashboard", "repair_agent", agent_target=agent_key)
+            kwargs = {"agent_target": agent_key}
+            if glpi_oauth:
+                kwargs["glpi_oauth_id"] = glpi_oauth["id"]
+                kwargs["glpi_oauth_secret"] = glpi_oauth["secret"]
+            
+            ps_script = load_ps_template("dashboard", "repair_agent", **kwargs)
         except PsTemplateError as e:
             QMessageBox.critical(self, "Erro Interno", f"Template de reparo não encontrado:\n{e}")
             return

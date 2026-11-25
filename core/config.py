@@ -23,6 +23,14 @@ TIMEOUT_PORT_PROBE = 1.0
 TIMEOUT_POWERSHELL_LOCAL = 600
 TIMEOUT_WMI_HOURS = 8
 
+# Configuração do GLPI (não commitar segredos reais)
+def get_glpi_oauth() -> dict:
+    """Retorna as credenciais OAuth do GLPI (env ou DPAPI)."""
+    return {
+        "id": os.environ.get("SARCC_GLPI_OAUTH_ID", ""),
+        "secret": os.environ.get("SARCC_GLPI_OAUTH_SECRET", ""),
+    }
+
 
 def is_dev_mode() -> bool:
     return not getattr(sys, "frozen", False)
