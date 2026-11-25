@@ -1,12 +1,14 @@
-import sys
-import os
 import ctypes
+import os
+import sys
+
 import qdarktheme
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
+
 from core.config import ensure_dirs
-from core.version import __version__
 from core.resources import resource_path
+from core.version import __version__
 
 
 def _set_windows_app_id():

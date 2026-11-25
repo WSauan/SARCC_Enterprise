@@ -1,4 +1,5 @@
 from PyQt6.QtWidgets import QApplication
+
 from gui.widgets.code_editor import CodeEditorWidget
 
 _QAPP = QApplication.instance() or QApplication([])

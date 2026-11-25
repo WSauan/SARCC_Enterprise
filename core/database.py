@@ -1,6 +1,7 @@
-import sqlite3
 import os
+import sqlite3
 from datetime import datetime, timedelta
+
 
 class DatabaseManager:
     def __init__(self, db_path=None):
@@ -29,16 +30,16 @@ class DatabaseManager:
         # 1. timeout=20.0: Aguarda até 20s caso outro colega esteja gravando no momento
         # 2. check_same_thread=False: Libera o acesso simultâneo para a interface gráfica
         conn = sqlite3.connect(self.db_path, timeout=20.0, check_same_thread=False)
-        
+
         # 3. Ativa o modo WAL para permitir Leituras e Gravações simultâneas na rede
         conn.execute('PRAGMA journal_mode=wal')
-        
+
         return conn
 
     def _initialize_db(self):
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
+
             # Cria a tabela base
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS executions (
@@ -51,11 +52,11 @@ class DatabaseManager:
                     excluido INTEGER DEFAULT 0
                 )
             ''')
-            
+
             # --- AUTO-MIGRAÇÃO (Adicionando Auditoria de Técnico e Módulo) ---
             cursor.execute("PRAGMA table_info(executions)")
             colunas_exe = [col[1] for col in cursor.fetchall()]
-            
+
             if 'technician' not in colunas_exe:
                 cursor.execute("ALTER TABLE executions ADD COLUMN technician TEXT DEFAULT 'N/A'")
             if 'module' not in colunas_exe:
@@ -65,7 +66,7 @@ class DatabaseManager:
             cursor.execute("PRAGMA table_info(scripts)")
             colunas_scripts = [col[1] for col in cursor.fetchall()]
             if 'caminho' in colunas_scripts:
-                cursor.execute("DROP TABLE scripts") 
+                cursor.execute("DROP TABLE scripts")
 
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS scripts (
@@ -107,7 +108,7 @@ class DatabaseManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                UPDATE scripts 
+                UPDATE scripts
                 SET nome = ?, descricao = ?, categoria = ?, conteudo = ?
                 WHERE id = ?
             ''', (nome, descricao, categoria, conteudo, script_id))

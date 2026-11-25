@@ -1,7 +1,7 @@
 from gui.views.execution_view import (
-    parse_targets_string,
-    expand_subnet_range,
     _ip_in_subnet,
+    expand_subnet_range,
+    parse_targets_string,
 )
 
 

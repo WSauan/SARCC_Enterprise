@@ -1,16 +1,23 @@
 import base64
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QTextEdit, QGroupBox,
-    QMessageBox, QComboBox
-)
+
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+)
 
+from core.ps_loader import PsTemplateError, load_ps_template
 from core.remote_connection import RemoteConnectionManager
-from core.ps_loader import load_ps_template, PsTemplateError
-from gui.views.base_view import BaseView
 from core.text_utils import fix_mojibake
+from gui.views.base_view import BaseView
 
 # Catálogo de atalhos de diagnóstico e reset de rede
 NETWORK_SHORTCUTS = [

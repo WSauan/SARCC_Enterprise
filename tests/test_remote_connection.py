@@ -1,7 +1,9 @@
 import os
 import socket
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
+
 from core.remote_connection import RemoteConnectionManager, resolve_target_hostname
 
 

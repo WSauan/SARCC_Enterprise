@@ -1,11 +1,16 @@
 import re
 from unittest.mock import MagicMock
-from PyQt6.QtWidgets import QApplication, QHeaderView
+
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QApplication, QHeaderView
+
 from core.ps_loader import load_ps_template
 from gui.views.dashboard_view import (
-    _is_temp_profile, _sort_profiles, format_smart_badge,
-    format_profile_session_status, DashboardView
+    DashboardView,
+    _is_temp_profile,
+    _sort_profiles,
+    format_profile_session_status,
+    format_smart_badge,
 )
 
 _QAPP = QApplication.instance() or QApplication([])

@@ -1,26 +1,42 @@
+import base64
 import os
 import shutil
-import subprocess
 import socket
+import subprocess
 import time
-import base64
 from datetime import datetime
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QGroupBox,
-    QGridLayout, QComboBox, QMessageBox, QProgressBar, QScrollArea, QInputDialog,
-    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QApplication,
-    QMenu
-)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
-from gui.dialogs.dialogs import CredentialDialog
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
 from core.credential_store import CredentialStore
+from core.ps_loader import PsTemplateError, load_ps_template
 from core.remote_connection import RemoteConnectionManager
 from core.task_queue import TaskQueueManager
-from core.ps_loader import load_ps_template, PsTemplateError
-from infrastructure.repositories.execution_repository import ExecutionRepository
+from gui.dialogs.dialogs import CredentialDialog
 from gui.views.base_view import BaseView
+from infrastructure.repositories.execution_repository import ExecutionRepository
 
 
 def _format_last_use(dt_str: str) -> str:
@@ -963,7 +979,7 @@ class DashboardView(BaseView):
                 env_oauth = get_glpi_oauth()
                 if env_oauth["id"] and env_oauth["secret"]:
                     glpi_oauth = env_oauth
-            
+
             if not glpi_oauth or not glpi_oauth.get("id") or not glpi_oauth.get("secret"):
                 QMessageBox.warning(
                     self, "OAuth GLPI Ausente",
@@ -978,7 +994,7 @@ class DashboardView(BaseView):
             if glpi_oauth:
                 kwargs["glpi_oauth_id"] = glpi_oauth["id"]
                 kwargs["glpi_oauth_secret"] = glpi_oauth["secret"]
-            
+
             ps_script = load_ps_template("dashboard", "repair_agent", **kwargs)
         except PsTemplateError as e:
             QMessageBox.critical(self, "Erro Interno", f"Template de reparo não encontrado:\n{e}")

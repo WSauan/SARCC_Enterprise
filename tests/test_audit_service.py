@@ -1,6 +1,6 @@
 from core.database import DatabaseManager
-from infrastructure.repositories.execution_repository import ExecutionRepository
 from domain.services.audit_service import AuditService
+from infrastructure.repositories.execution_repository import ExecutionRepository
 
 
 def test_audit_service_generates_formatted_glpi_report(tmp_path):

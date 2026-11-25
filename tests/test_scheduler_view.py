@@ -1,8 +1,10 @@
 from unittest.mock import MagicMock
+
 from PyQt6.QtWidgets import QApplication
+
 from core.database import DatabaseManager
-from infrastructure.repositories.script_repository import ScriptRepository
 from gui.views.scheduler_view import SchedulerView
+from infrastructure.repositories.script_repository import ScriptRepository
 
 _QAPP = QApplication.instance() or QApplication([])
 

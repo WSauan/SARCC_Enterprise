@@ -1,9 +1,9 @@
-from pathlib import Path
-from core.logger import get_logger
-from core.config import get_ps_scripts_dir, SHARE_ROOT, SERVER_ROOT, ZABBIX_IP, GLPI_URL
 import hashlib
 import json
 import re
+
+from core.config import GLPI_URL, SERVER_ROOT, SHARE_ROOT, ZABBIX_IP, get_ps_scripts_dir
+from core.logger import get_logger
 
 log = get_logger(__name__)
 
@@ -26,7 +26,7 @@ def load_ps_template(category: str, template_name: str, **kwargs) -> str:
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             rel_key = script_path.relative_to(base_dir).as_posix()
-            
+
             expected_hash = manifest.get(rel_key)
             if not expected_hash:
                 log.warning(f"Script '{rel_key}' não encontrado no manifesto. Pulando validação.")

@@ -1,18 +1,33 @@
 import json
 from datetime import datetime, timedelta
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QTreeWidget, QTreeWidgetItem,
-    QHeaderView, QDialog, QTextEdit, QMessageBox,
-    QFileDialog, QCheckBox, QLineEdit, QComboBox,
-    QDateEdit, QDateTimeEdit, QAbstractItemView, QGroupBox
-)
-from PyQt6.QtCore import Qt, QDate, QTime, QDateTime
 
-from infrastructure.repositories.execution_repository import ExecutionRepository
+from PyQt6.QtCore import QDate, QDateTime, Qt, QTime
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QDateEdit,
+    QDateTimeEdit,
+    QDialog,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from core.text_utils import fix_mojibake
 from domain.services.audit_service import AuditService, extract_json_from_result, format_duration
 from gui.views.base_view import sanitize_filename
-from core.text_utils import fix_mojibake
+from infrastructure.repositories.execution_repository import ExecutionRepository
 
 
 class LogTreeWidgetItem(QTreeWidgetItem):

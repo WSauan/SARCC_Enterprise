@@ -1,4 +1,4 @@
-from gui.views.history_view import extract_json_from_result, HistoryView
+from gui.views.history_view import HistoryView, extract_json_from_result
 
 
 def test_extract_json_from_result_handles_warnings_and_timer_footer():

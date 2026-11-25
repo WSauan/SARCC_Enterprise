@@ -1,18 +1,32 @@
 import base64
 from pathlib import Path
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QGroupBox, QComboBox, QMessageBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QTimeEdit, QDateEdit, QCheckBox
-)
-from PyQt6.QtCore import Qt, QDate, QTime
 
+from PyQt6.QtCore import QDate, Qt, QTime
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QDateEdit,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTimeEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from core.config import get_data_dir, get_ps_scripts_dir
+from core.ps_loader import PsTemplateError, load_ps_template
 from core.task_queue import TaskQueueManager
-from core.ps_loader import load_ps_template, PsTemplateError
-from core.config import get_ps_scripts_dir, get_data_dir
-from infrastructure.repositories.script_repository import ScriptRepository
-from gui.views.base_view import BaseView, read_text_file_safe
 from core.text_utils import fix_mojibake
+from gui.views.base_view import BaseView, read_text_file_safe
+from infrastructure.repositories.script_repository import ScriptRepository
 
 
 class SchedulerView(BaseView):

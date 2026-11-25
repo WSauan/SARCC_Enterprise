@@ -1,9 +1,10 @@
-from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QTextDocument
-from gui.views.scripts_view import PowerShellHighlighter, ScriptsView
+from PyQt6.QtWidgets import QApplication
+
 from core.database import DatabaseManager
-from infrastructure.repositories.script_repository import ScriptRepository
 from domain.services.script_service import ScriptService
+from gui.views.scripts_view import PowerShellHighlighter, ScriptsView
+from infrastructure.repositories.script_repository import ScriptRepository
 
 _QAPP = QApplication.instance() or QApplication([])
 

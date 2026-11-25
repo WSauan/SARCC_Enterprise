@@ -1,15 +1,17 @@
+import base64
 import ipaddress
 import json
-import subprocess
-import base64
-import socket
 import os
-import sys
 import shutil
-import uuid
+import socket
+import subprocess
+import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from typing import Dict, Any, List, Optional
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from typing import Any, Dict, List, Optional
+
 from core.logger import get_logger
 
 log = get_logger(__name__)
@@ -211,12 +213,12 @@ class RemoteConnectionManager:
             $b64 = "{b64_script}"
             $DecodedScript = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64))
             $ScriptBlock = [scriptblock]::Create($DecodedScript)
-            
+
             $opt = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
             Invoke-Command -ComputerName '{target_pc}' -SessionOption $opt -ScriptBlock $ScriptBlock
-        }} catch {{ 
+        }} catch {{
             Write-Output "SARCC_WINRM_ERROR: $($_.Exception.Message)"
-            exit 1 
+            exit 1
         }}
         """
 
@@ -270,19 +272,19 @@ class RemoteConnectionManager:
         $ErrorActionPreference = 'Stop'
         try {{
             & cmd.exe /c "net use \\\\{target_pc}\\C$ /delete /y >nul 2>&1"
-            
+
             $netUseOut = & cmd.exe /c "net use \\\\{target_pc}\\C$ 2>&1"
             if ($LASTEXITCODE -ne 0) {{ throw "Acesso Negado ou Disco C$ inacessível via SMB (445)." }}
-            
+
             $b64 = "{b64_script}"
             $DecodedScript = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64))
             $WmiRunner = "try {{ & {{ $DecodedScript }} | Out-File '{remote_json}' -Encoding UTF8 -Force }} catch {{ `$_.Exception.Message | Out-File '{remote_json}' -Encoding UTF8 -Force }}; Remove-Item `$PSCommandPath -Force -ErrorAction SilentlyContinue"
-            
+
             [IO.File]::WriteAllText('{unc_ps1}', $WmiRunner, [System.Text.Encoding]::UTF8)
-            
+
             $cmd = "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -NoProfile -File {remote_ps1}"
             Invoke-WmiMethod -Path "Win32_Process" -Name "Create" -ArgumentList $cmd -ComputerName '{target_pc}' | Out-Null
-            
+
             $timeout = 28800
             $elapsed = 0
             $result = ""
@@ -299,17 +301,17 @@ class RemoteConnectionManager:
                 Start-Sleep -Seconds 1
                 $elapsed++
             }}
-            
+
             & cmd.exe /c "net use \\\\{target_pc}\\C$ /delete /y >nul 2>&1"
-            
-            if ($result) {{ Write-Output $result }} 
+
+            if ($result) {{ Write-Output $result }}
             else {{ throw "WMI demorou mais de 8 Horas para responder. A execucao pode ter travado ou ainda esta rodando no alvo." }}
-            
-        }} catch {{ 
+
+        }} catch {{
             $errMsg = $_.Exception.Message
             & cmd.exe /c "net use \\\\{target_pc}\\C$ /delete /y >nul 2>&1"
             Write-Output "SARCC_WMI_ERROR: $errMsg"
-            exit 1 
+            exit 1
         }}
         """
 

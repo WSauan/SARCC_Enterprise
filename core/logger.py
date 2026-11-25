@@ -15,6 +15,7 @@ Saída:
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
+
 from core.config import get_logs_dir
 
 _configured = False

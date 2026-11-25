@@ -8,3 +8,5 @@ pytest-mock>=3.12.0
 
 # Empacotamento e Distribuição (.exe)
 pyinstaller>=6.0.0
+
+ruff>=0.3.0

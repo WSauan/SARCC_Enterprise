@@ -1,23 +1,37 @@
+import base64
 import csv
 import json
 import os
-import base64
 from datetime import datetime, timedelta
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QGroupBox,
-    QMessageBox, QTabWidget, QComboBox, QDialog,
-    QTextEdit, QGridLayout, QApplication, QDateTimeEdit,
-    QFileDialog
-)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDate, QTime, QDateTime
 
+from PyQt6.QtCore import QDate, QDateTime, Qt, QThread, QTime, pyqtSignal
+from PyQt6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QDateTimeEdit,
+    QDialog,
+    QFileDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from core.ps_loader import PsTemplateError, load_ps_template
 from core.remote_connection import RemoteConnectionManager
-from core.ps_loader import load_ps_template, PsTemplateError
-from infrastructure.repositories.execution_repository import ExecutionRepository
 from gui.views.base_view import BaseView, sanitize_filename
 from gui.views.software_view import fix_mojibake
+from infrastructure.repositories.execution_repository import ExecutionRepository
 
 REBOOT_EVENT_IDS = "41,6008,1074,6006,6009,1001"
 

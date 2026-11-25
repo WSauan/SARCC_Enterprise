@@ -1,16 +1,26 @@
 import os
 import re
-from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QPalette
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QGroupBox, QScrollArea, QPushButton, QApplication,
-    QMessageBox, QTabWidget, QTextBrowser
-)
+
 from PyQt6.QtCore import Qt
-from gui.views.base_view import BaseView, read_text_file_safe
+from PyQt6.QtGui import QColor, QPalette, QTextCharFormat, QTextCursor
+from PyQt6.QtWidgets import (
+    QApplication,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QTabWidget,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
+
+from core.logger import get_logger
 from core.resources import resource_path
 from core.version import __version__
-from core.logger import get_logger
+from gui.views.base_view import BaseView, read_text_file_safe
 
 log = get_logger(__name__)
 

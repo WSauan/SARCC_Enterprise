@@ -1,9 +1,10 @@
 import json
 import re
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-from infrastructure.repositories.execution_repository import ExecutionRepository
+from typing import Any, Dict, List, Optional
+
 from gui.views.software_view import fix_mojibake
+from infrastructure.repositories.execution_repository import ExecutionRepository
 
 
 def format_duration(seconds: float) -> str:

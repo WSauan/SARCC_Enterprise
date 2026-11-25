@@ -1,6 +1,7 @@
-import queue
 import base64
+import queue
 from unittest.mock import MagicMock
+
 from core.task_queue import TaskWorker, WorkerSignals
 
 

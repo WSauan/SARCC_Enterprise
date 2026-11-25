@@ -1,0 +1,9 @@
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# Ativa regras de erros (E), warnings (W), imports não usados (F401), variáveis não usadas (F841), etc.
+select = ["E", "W", "F", "I"]
+# Ignora regras muito rígidas de formatação de linha longa para não quebrar o código atual
+ignore = ["E501"]

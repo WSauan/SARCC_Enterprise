@@ -1,30 +1,47 @@
-import os
+import base64
 import csv
-import json
+import os
 import re
 import shutil
 import subprocess
-import base64
-import urllib.request
 import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
-    QGroupBox, QComboBox, QMessageBox, QCheckBox, QAbstractItemView,
-    QTabWidget, QDialog, QListWidget, QListWidgetItem, QTextEdit,
-    QFileDialog, QApplication
-)
+
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from gui.dialogs.dialogs import CredentialDialog
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
 from core.credential_store import CredentialStore
-from core.remote_connection import RemoteConnectionManager
-from core.ps_loader import load_ps_template, PsTemplateError
-from core.task_queue import TaskQueueManager
-from gui.views.base_view import BaseView
 from core.logger import get_logger
+from core.ps_loader import PsTemplateError, load_ps_template
+from core.remote_connection import RemoteConnectionManager
+from core.task_queue import TaskQueueManager
 from core.text_utils import fix_mojibake
+from gui.dialogs.dialogs import CredentialDialog
+from gui.views.base_view import BaseView
 
 log = get_logger(__name__)
 
@@ -296,13 +313,13 @@ class OnlineSearchDialog(QDialog):
     def _parse_winget(self, stdout: str):
         linhas = stdout.splitlines()
         start_idx = -1
-        for i, l in enumerate(linhas):
-            if re.match(r"^[-─]{3,}", l.strip()):
+        for i, linha in enumerate(linhas):
+            if re.match(r"^[-─]{3,}", linha.strip()):
                 start_idx = i + 1
                 break
         if start_idx == -1:
-            for i, l in enumerate(linhas):
-                if re.search(r"\b(Id|Nome|Name|Versão|Version)\b", l) and "  " in l:
+            for i, linha in enumerate(linhas):
+                if re.search(r"\b(Id|Nome|Name|Versão|Version)\b", linha) and "  " in linha:
                     start_idx = i + 2
                     break
         if start_idx == -1 or start_idx >= len(linhas):
@@ -313,8 +330,8 @@ class OnlineSearchDialog(QDialog):
             return
 
         encontrou = False
-        for l in linhas[start_idx:]:
-            stripped = l.strip()
+        for linha in linhas[start_idx:]:
+            stripped = linha.strip()
             if not stripped or stripped.startswith("-"):
                 continue
             partes = re.split(r"\s{2,}", stripped)

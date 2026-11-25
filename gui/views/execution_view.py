@@ -6,25 +6,39 @@ import socket
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QGroupBox,
-    QMessageBox, QTextEdit, QFileDialog,
-    QSizePolicy, QListWidget, QListWidgetItem, QDialog,
-    QApplication, QInputDialog
-)
+
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
-from gui.dialogs.dialogs import CredentialDialog
+from PyQt6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+)
+
+from core.config import CATEGORY_TIMEOUTS
 from core.credential_store import CredentialStore
 from core.remote_connection import RemoteConnectionManager
 from core.task_queue import TaskQueueManager
-from infrastructure.repositories.script_repository import ScriptRepository
-from domain.services.script_service import ScriptService
-from gui.views.base_view import BaseView, read_text_file_safe
 from core.text_utils import fix_mojibake
-from core.config import CATEGORY_TIMEOUTS
+from domain.services.script_service import ScriptService
+from gui.dialogs.dialogs import CredentialDialog
+from gui.views.base_view import BaseView, read_text_file_safe
+from infrastructure.repositories.script_repository import ScriptRepository
 
 
 def parse_targets_string(raw_text: str) -> list[str]:
@@ -849,7 +863,7 @@ class ExecutionView(BaseView):
             # Pega o timeout com base na categoria (Rede, Manutenção, etc)
             categoria_do_script = script.get("categoria", "Outros")
             timeout_categoria = CATEGORY_TIMEOUTS.get(categoria_do_script, 300)
-            
+
             self.disparar_fila(
                 targets,
                 script["nome"],

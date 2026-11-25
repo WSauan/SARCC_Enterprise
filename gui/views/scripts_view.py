@@ -1,16 +1,27 @@
+from PyQt6.QtCore import QRegularExpression, Qt
+from PyQt6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
-    QSplitter, QGroupBox, QComboBox, QMessageBox,
-    QSizePolicy, QFileDialog, QAbstractItemView
+    QAbstractItemView,
+    QComboBox,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QSplitter,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
 )
-from PyQt6.QtCore import Qt, QRegularExpression
-from PyQt6.QtGui import QFont, QSyntaxHighlighter, QTextCharFormat, QColor
-from gui.widgets.code_editor import CodeEditorWidget
-from gui.views.base_view import BaseView, sanitize_filename
-from infrastructure.repositories.script_repository import ScriptRepository
-from domain.services.script_service import ScriptService
+
 from core.logger import get_logger
+from domain.services.script_service import ScriptService
+from gui.views.base_view import BaseView, sanitize_filename
+from gui.widgets.code_editor import CodeEditorWidget
+from infrastructure.repositories.script_repository import ScriptRepository
 
 log = get_logger(__name__)
 

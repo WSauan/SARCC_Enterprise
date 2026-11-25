@@ -1,4 +1,5 @@
-from typing import List, Optional, Tuple, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
+
 from core.database import DatabaseManager
 
 

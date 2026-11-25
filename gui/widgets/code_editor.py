@@ -1,9 +1,6 @@
-from PyQt6.QtCore import Qt, QRect, QSize
-from PyQt6.QtGui import QColor, QFont, QPainter, QTextFormat, QTextDocument, QTextCursor
-from PyQt6.QtWidgets import (
-    QWidget, QPlainTextEdit, QTextEdit, QHBoxLayout,
-    QLineEdit, QPushButton, QVBoxLayout, QLabel
-)
+from PyQt6.QtCore import QRect, QSize, Qt
+from PyQt6.QtGui import QColor, QFont, QPainter, QTextCursor, QTextDocument, QTextFormat
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
 
 class LineNumberArea(QWidget):
@@ -155,8 +152,8 @@ class CodeEditorWidget(QWidget):
                 padding: 4px 8px;
                 font-weight: bold;
             }
-            QPushButton:hover { 
-                background-color: #44475a; 
+            QPushButton:hover {
+                background-color: #44475a;
                 border-radius: 2px;
             }
         """)

@@ -8,6 +8,7 @@ Centraliza funcionalidades comuns:
 """
 
 from pathlib import Path
+
 from PyQt6.QtWidgets import QWidget
 
 

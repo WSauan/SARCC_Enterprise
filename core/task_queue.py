@@ -1,15 +1,16 @@
-import threading
-import queue
+import base64 as b64
 import json
 import os
-import base64 as b64
+import queue
+import threading
+
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from core.remote_connection import RemoteConnectionManager
-from core.database import DatabaseManager
 from core.config import get_max_threads
+from core.database import DatabaseManager
 from core.logger import get_logger
 from core.ps_loader import extract_script_timeout
+from core.remote_connection import RemoteConnectionManager
 
 log = get_logger(__name__)
 
@@ -142,7 +143,7 @@ class TaskQueueManager:
             signals.finished.connect(on_finish)
         if on_error:
             signals.error.connect(on_error)
-        
+
         # Adiciona o signals e o timeout na tupla da fila
         self.task_queue.put((target_pc, script_name, script_content, module_name, credentials, script_b64, signals, timeout_seconds))
 

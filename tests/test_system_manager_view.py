@@ -1,11 +1,19 @@
 import csv
 from unittest.mock import MagicMock
-from PyQt6.QtWidgets import QApplication, QTableWidget, QTableWidgetItem
+
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QApplication, QTableWidget, QTableWidgetItem
+
 from gui.views.system_manager_view import (
-    safe_int, safe_float, normalize_service_status,
-    normalize_printer_status, SysManagerWorker, SystemManagerView,
-    build_warranty_report_text, export_qtable_to_csv, REBOOT_EVENT_IDS
+    REBOOT_EVENT_IDS,
+    SysManagerWorker,
+    SystemManagerView,
+    build_warranty_report_text,
+    export_qtable_to_csv,
+    normalize_printer_status,
+    normalize_service_status,
+    safe_float,
+    safe_int,
 )
 
 _QAPP = QApplication.instance() or QApplication([])

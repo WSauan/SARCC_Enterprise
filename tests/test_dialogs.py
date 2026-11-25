@@ -1,4 +1,5 @@
 from PyQt6.QtWidgets import QApplication, QLineEdit
+
 from gui.dialogs.dialogs import CredentialDialog
 
 # Mantém referência global viva durante toda a sessão do pytest para evitar Crash C++ no PyQt6

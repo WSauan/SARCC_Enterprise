@@ -1,5 +1,6 @@
 import pytest
-from core.ps_loader import load_ps_template, PsTemplateError
+
+from core.ps_loader import PsTemplateError, load_ps_template
 
 
 def test_load_nonexistent_template():

@@ -1,27 +1,34 @@
 import os
+
 import qdarktheme
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
-    QMainWindow, QMessageBox, QWidget, QHBoxLayout, QVBoxLayout,
-    QPushButton, QStackedWidget, QLabel, QApplication
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt
 
-from core.resources import resource_path
 from core.config import get_max_threads
-from core.version import __version__
-from core.task_queue import TaskQueueManager
 from core.logger import get_logger
-
+from core.resources import resource_path
+from core.task_queue import TaskQueueManager
+from core.version import __version__
 from gui.views.dashboard_view import DashboardView
-from gui.views.shell_view import ShellView
-from gui.views.system_manager_view import SystemManagerView
 from gui.views.execution_view import ExecutionView
-from gui.views.software_view import SoftwareView
+from gui.views.help_view import HelpView
+from gui.views.history_view import HistoryView
 from gui.views.scheduler_view import SchedulerView
 from gui.views.scripts_view import ScriptsView
-from gui.views.history_view import HistoryView
-from gui.views.help_view import HelpView
+from gui.views.shell_view import ShellView
+from gui.views.software_view import SoftwareView
+from gui.views.system_manager_view import SystemManagerView
 
 log = get_logger(__name__)
 
@@ -241,14 +248,14 @@ class MainWindow(QMainWindow):
         QGroupBox::title {{ subcontrol-origin: margin; left: 15px; padding: 0 5px; color: {primary_blue}; }}
         QHeaderView::section {{ font-weight: bold; color: {primary_blue}; }}
 
-        QLineEdit, QComboBox {{ 
-            min-height: 32px; 
+        QLineEdit, QComboBox {{
+            min-height: 32px;
             max-height: 32px;
-            padding: 0 10px; 
-            background-color: {input_bg}; 
-            color: {text_menu}; 
-            border: 1px solid {border_color}; 
-            border-radius: 4px; 
+            padding: 0 10px;
+            background-color: {input_bg};
+            color: {text_menu};
+            border: 1px solid {border_color};
+            border-radius: 4px;
         }}
 
         QTextEdit {{ background-color: {input_bg}; color: {text_menu}; border: 1px solid {border_color}; border-radius: 4px; }}

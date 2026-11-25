@@ -1,4 +1,4 @@
-from gui.views.software_view import fix_mojibake, SoftwareView
+from gui.views.software_view import SoftwareView, fix_mojibake
 
 
 def test_fix_mojibake_repairs_corrupted_utf8():

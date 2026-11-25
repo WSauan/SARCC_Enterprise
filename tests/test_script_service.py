@@ -1,6 +1,6 @@
 from core.database import DatabaseManager
-from infrastructure.repositories.script_repository import ScriptRepository
 from domain.services.script_service import ScriptService
+from infrastructure.repositories.script_repository import ScriptRepository
 
 
 def test_script_service_detects_credential_placeholders():

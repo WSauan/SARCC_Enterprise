@@ -174,7 +174,7 @@ class CredentialStore:
     def location(cls) -> str:
         """Retorna o caminho atual (útil para debug e exibição na UI)."""
         return cls._store_path()
-    
+
     @classmethod
     def save_glpi_oauth(cls, client_id: str, client_secret: str) -> bool:
         """Salva OAuth do GLPI cifrado via DPAPI (arquivo separado)."""
@@ -184,11 +184,11 @@ class CredentialStore:
                 "secret": client_secret,
             }).encode("utf-8")
             ciphertext = _dpapi_encrypt(payload)
-            
+
             # Usa a mesma pasta do credentials.dat, mas com nome diferente
             base_dir = os.path.dirname(cls._store_path())
             path = os.path.join(base_dir, "glpi_oauth.dat")
-            
+
             with open(path, "wb") as f:
                 f.write(ciphertext)
             log.info(f"OAuth GLPI salvo em disco (DPAPI) em {path}")
@@ -202,7 +202,7 @@ class CredentialStore:
         """Carrega OAuth do GLPI do arquivo DPAPI."""
         base_dir = os.path.dirname(cls._store_path())
         path = os.path.join(base_dir, "glpi_oauth.dat")
-        
+
         if not os.path.exists(path):
             return None
         try:

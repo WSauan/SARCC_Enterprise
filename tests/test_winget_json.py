@@ -1,5 +1,6 @@
 import json
 
+
 def test_winget_json_parsing_structure():
     """Valida a estrutura de JSON que o novo script PS vai processar."""
     raw_json = """
@@ -28,7 +29,7 @@ def test_winget_json_parsing_structure():
     """
     data = json.loads(raw_json)
     packages = data["Sources"][0]["Packages"]
-    
+
     assert len(packages) == 2
     assert packages[0]["PackageIdentifier"] == "VideoLAN.VLC"
     assert packages[0]["AvailableVersion"] == "3.0.20"
