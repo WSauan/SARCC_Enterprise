@@ -57,7 +57,7 @@ function Mount-SarccShare {
             $script:driveCreated = $true
             $script:shareRoot = "${DriveLetter}:"
         } catch {
-            & cmd.exe /c "net use `"$ShareServerPath`" `"$AdminPass`" /user:`"$AdminUser`" /persistent:no >nul 2>&1"
+            # Fallback seguro (sem expor senha no cmdline)
             if (Test-Path -LiteralPath $ShareServerPath) {
                 $script:shareRoot = $ShareServerPath
             } else {

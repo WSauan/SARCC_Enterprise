@@ -65,7 +65,6 @@ try {
             $SharePath = "${DriveLetter}:"
             $LogData.Detalhes += "[+] PSDrive Z: montado."
         } catch {
-            & cmd.exe /c "net use `"$ShareRoot`" `"$AdminPass`" /user:`"$AdminUser`" /persistent:no >nul 2>&1"
             if (Test-Path -LiteralPath $ShareRoot) {
                 $SharePath = $ShareRoot
                 $LogData.Detalhes += "[+] Share autenticado via sessão UNC direta."

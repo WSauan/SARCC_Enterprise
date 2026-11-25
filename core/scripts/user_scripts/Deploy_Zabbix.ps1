@@ -77,8 +77,7 @@ try {
             $null = New-PSDrive -Name $DriveLetter -PSProvider FileSystem -Root $ShareServerPath -Credential $cred -Scope Global -ErrorAction Stop
             $driveCreated = $true
             $shareRoot = "${DriveLetter}:"
-        } catch {
-            & cmd.exe /c "net use `"$ShareServerPath`" `"$AdminPass`" /user:`"$AdminUser`" /persistent:no >nul 2>&1"
+        } catch {           
             if (Test-Path -LiteralPath $ShareServerPath) {
                 $shareRoot = $ShareServerPath
                 $LogData.Detalhes += "      -> Conectado via sessão UNC direta."
@@ -212,9 +211,6 @@ try {
     }
     if ($driveCreated) {
         Remove-PSDrive -Name $DriveLetter -Force -ErrorAction SilentlyContinue
-    }
-    if (-not $UseContaMaquina) {
-        & cmd.exe /c "net use `"$ShareServerPath`" /delete /y >nul 2>&1"
     }
     $LogData.Fim = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     $LogData | ConvertTo-Json -Depth 3 -Compress | Write-Output

@@ -48,8 +48,6 @@ try {
             $SharePath = "${DriveLetter}:"
             $LogData.Detalhes += "[+] PSDrive Z: montado."
         } catch {
-            # Fallback via net use direto no caminho UNC para que o pnputil.exe tenha acesso em sessão não-interativa
-            & cmd.exe /c "net use `"$ShareRoot`" `"$AdminPass`" /user:`"$AdminUser`" /persistent:no >nul 2>&1"
             if (Test-Path -LiteralPath $ShareRoot) {
                 $SharePath = $ShareRoot
                 $LogData.Detalhes += "[+] Share autenticado via sessão UNC direta."
