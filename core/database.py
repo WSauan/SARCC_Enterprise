@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 
 
@@ -27,14 +28,16 @@ class DatabaseManager:
         self._auto_cleanup()
 
     def get_connection(self):
-        # 1. timeout=20.0: Aguarda até 20s caso outro colega esteja gravando no momento
-        # 2. check_same_thread=False: Libera o acesso simultâneo para a interface gráfica
-        conn = sqlite3.connect(self.db_path, timeout=20.0, check_same_thread=False)
+        # Padrão Thread-Local: uma conexão por thread
+        if not hasattr(self, "_local"):
+            self._local = threading.local()
 
-        # 3. Ativa o modo WAL para permitir Leituras e Gravações simultâneas na rede
-        conn.execute('PRAGMA journal_mode=wal')
+        if not hasattr(self._local, "conn"):
+            conn = sqlite3.connect(self.db_path, timeout=20.0, check_same_thread=False)
+            conn.execute('PRAGMA journal_mode=wal')
+            self._local.conn = conn
 
-        return conn
+        return self._local.conn
 
     def _initialize_db(self):
         with self.get_connection() as conn:

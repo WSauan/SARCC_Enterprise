@@ -1,4 +1,4 @@
-# SARCC Enterprise — SysAdmin Remote Command Center (v2.12.0)
+# SARCC Enterprise — SysAdmin Remote Command Center (v3.0.0)
 
 O **SARCC Enterprise** é uma plataforma desktop *Enterprise-grade* para administração remota, telemetria física em tempo real, automação de tarefas, gestão de pacotes, manutenção de impressão e suporte de estações Windows em ambientes corporativos (Active Directory / Workgroups).
 
@@ -10,7 +10,7 @@ Construído em Python com interface gráfica em **PyQt6** e arquitetura em camad
 
 ## 🏗️ Arquitetura do Projeto
 
-O projeto é estruturado em camadas desacopladas com cobertura de testes unitários no padrão 1-para-1 (62 testes automatizados):
+O projeto é estruturado em camadas desacopladas com cobertura de testes unitários no padrão 1-para-1 (74 testes automatizados), alem da existência de um manisfest.json que serve para proteger os scripts:
 
 ~~~text
 SARCC_Enterprise/

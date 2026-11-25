@@ -66,6 +66,12 @@ Write-Host "==========================================================" -Foregro
 
 # 1. Validacao dos Testes Automatizados antes do Build
 Write-Host "`n[1/5] Executando bateria de testes (pytest)..." -ForegroundColor Yellow
+& python generate_manifest.py
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERRO: Falha ao gerar o manifest.json dos scripts." -ForegroundColor Red
+    exit 1
+}
+
 & pytest -v
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERRO: O empacotamento foi abortado porque um ou mais testes falharam!" -ForegroundColor Red

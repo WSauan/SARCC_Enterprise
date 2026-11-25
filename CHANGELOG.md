@@ -1,5 +1,27 @@
 # Histórico de Versões (Changelog) — SARCC Enterprise
 
+## [v3.0.0] — 2026-11-25
+### 🛡️ Hardening de Segurança, Arquitetura de Timeout e Qualidade de Código
+
+**Segurança (R01 a R05)**
+* **R01 (Remoção de Segredos):** Removido o *OAuth Client Secret* do GLPI hardcoded dos scripts. As credenciais agora são lidas via DPAPI (`CredentialStore`) ou variáveis de ambiente.
+* **R02 (Prevenção de Vazamento):** Removido o comando `net use` com senha em texto plano (CWE-214) de todos os scripts. O mapeamento de rede agora usa exclusivamente `New-PSDrive` com `PSCredential`.
+* **R03 (Integridade de Código):** Implementado manifesto `SHA256` (`manifest.json`). O `ps_loader` agora bloqueia a execução de scripts PowerShell que forem adulterados no disco.
+* **R04 (Supply Chain Security):** Removido o fallback do Chocolatey via `Invoke-Expression`. A auto-instalação agora usa o pacote oficial baixado via Winget.
+* **R05 (Zero Hardcode):** Removidos IPs do Zabbix, caminhos de compartilhamento SMB e caminhos de disco fixos. Todos foram centralizados no `config.py` e injetados dinamicamente nos scripts.
+
+**Resiliência (R06)**
+* **R06 (Timeout Inteligente):** Implementado sistema de timeout em 3 camadas (Diretiva `# @timeout` no script, categoria do script e padrão de 300s) para evitar que scripts pesados travem os workers da interface gráfica.
+
+**Qualidade e Arquitetura (R07 a R10)**
+* **R07 (Parsing Robusto):** Substituída a leitura de texto/colunas do Winget (que quebrava em outros idiomas) pelo processamento nativo de JSON (`--output json`).
+* **R08 (Desacoplamento):** A função `fix_mojibake` foi movida da camada de GUI para o `core/text_utils.py`, eliminando o acoplamento entre as views.
+* **R09 (Performance DB):** Otimização do `DatabaseManager` com *Thread-Local Connection Pooling*, reduzindo a abertura/fechamento de conexões SQLite em execuções massivas.
+* **R10 (Quality Gate):** Adicionado o linter `ruff` e o arquivo `pyproject.toml`. O pipeline de build e a suíte de testes agora falham se houver código sujo (imports não usados, espaços em branco, etc).
+
+**Build**
+* O `build_release.ps1` agora gera automaticamente o `manifest.json` antes de executar a bateria de testes e compilar o executável.
+
 ## [v2.12.0] — 2026-11-19
 ### 🚀 Laudo de Garantia, Exportação CSV, Descoberta de Alvos e Automação de Build
 * **Laudo Técnico de Garantia em 1 Clique (`SystemManagerView`):** Adicionado botão **📄 Laudo Garantia (.txt)** na aba **Logs de Eventos** que consulta hardware, serial/BIOS, uptime e status S.M.A.R.T. e consolida os eventos exibidos/filtrados em relatório `.txt`.
