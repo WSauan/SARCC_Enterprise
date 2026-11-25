@@ -1,3 +1,4 @@
+# @timeout: 7200
 <#
 .SYNOPSIS
     Reparo avançado de imagem do sistema via DISM RestoreHealth e SFC /scannow.

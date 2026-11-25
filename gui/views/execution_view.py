@@ -23,7 +23,8 @@ from core.task_queue import TaskQueueManager
 from infrastructure.repositories.script_repository import ScriptRepository
 from domain.services.script_service import ScriptService
 from gui.views.base_view import BaseView, read_text_file_safe
-from gui.views.software_view import fix_mojibake
+from core.text_utils import fix_mojibake
+from core.config import CATEGORY_TIMEOUTS
 
 
 def parse_targets_string(raw_text: str) -> list[str]:
@@ -845,11 +846,16 @@ class ExecutionView(BaseView):
             return
 
         for script in scripts_selecionados:
+            # Pega o timeout com base na categoria (Rede, Manutenção, etc)
+            categoria_do_script = script.get("categoria", "Outros")
+            timeout_categoria = CATEGORY_TIMEOUTS.get(categoria_do_script, 300)
+            
             self.disparar_fila(
                 targets,
                 script["nome"],
                 script["conteudo"],
                 credentials=credentials,
+                timeout_seconds=timeout_categoria # <-- Passando o tempo correto
             )
 
     def _get_selected_script_names(self) -> set:
@@ -895,7 +901,7 @@ class ExecutionView(BaseView):
             alvo = f"{data['nome']} {data.get('descricao', '')} {data.get('categoria', '')}".lower()
             item.setHidden(termo not in alvo)
 
-    def disparar_fila(self, targets, nome_tarefa, script_content, credentials=None):
+    def disparar_fila(self, targets, nome_tarefa, script_content, credentials=None, timeout_seconds=300):
         self.table.setSortingEnabled(False)
 
         for target in targets:
@@ -928,6 +934,7 @@ class ExecutionView(BaseView):
                 script_content=script_content,
                 module_name="[Execução] Lote",
                 credentials=credentials,
+                timeout_seconds=timeout_seconds,
                 on_start=lambda t, st=item_status, rs=item_resume, ini=item_inicio: self.update_status_start(t, st, rs, ini),
                 on_finish=lambda t, s, d, tgt=item_target, st=item_status, rs=item_resume, fi=item_fim: self.update_status_finish(t, s, d, tgt, st, rs, fi),
                 on_error=lambda t, e, tgt=item_target, st=item_status, rs=item_resume, fi=item_fim: self.update_status_error(t, e, tgt, st, rs, fi)

@@ -12,7 +12,7 @@ from PyQt6.QtCore import Qt, QDate, QTime, QDateTime
 from infrastructure.repositories.execution_repository import ExecutionRepository
 from domain.services.audit_service import AuditService, extract_json_from_result, format_duration
 from gui.views.base_view import sanitize_filename
-from gui.views.software_view import fix_mojibake
+from core.text_utils import fix_mojibake
 
 
 class LogTreeWidgetItem(QTreeWidgetItem):

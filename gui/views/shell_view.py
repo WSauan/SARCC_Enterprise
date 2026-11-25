@@ -10,7 +10,7 @@ from PyQt6.QtGui import QFont, QTextCursor
 from core.remote_connection import RemoteConnectionManager
 from core.ps_loader import load_ps_template, PsTemplateError
 from gui.views.base_view import BaseView
-from gui.views.software_view import fix_mojibake
+from core.text_utils import fix_mojibake
 
 # Catálogo de atalhos de diagnóstico e reset de rede
 NETWORK_SHORTCUTS = [

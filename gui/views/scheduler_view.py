@@ -12,7 +12,7 @@ from core.ps_loader import load_ps_template, PsTemplateError
 from core.config import get_ps_scripts_dir, get_data_dir
 from infrastructure.repositories.script_repository import ScriptRepository
 from gui.views.base_view import BaseView, read_text_file_safe
-from gui.views.software_view import fix_mojibake
+from core.text_utils import fix_mojibake
 
 
 class SchedulerView(BaseView):
