@@ -379,6 +379,9 @@ class SysManagerWorker(QThread):
         if self.action_type == "search_gpo_printers":
             return GPO_PRINTER_SYNC_SCRIPT
 
+        if self.action_type == "reset_gpo_printers":
+            return load_ps_template("system_manager", "reset_gpo_printers")
+
         if self.action_type == "generate_warranty_report":
             return WARRANTY_HW_PROBE_SCRIPT
 
@@ -395,8 +398,8 @@ class SysManagerWorker(QThread):
                 mode=self.extra_params.get("mode", "resync")
             )
 
-        if self.action_type == "reset_gpo_printers":
-            return load_ps_template("system_manager", "reset_gpo_printers")
+        if self.action_type == "get_bitlocker":
+            return load_ps_template("system_manager", "get_bitlocker")
 
         raise PsTemplateError(f"action_type desconhecido: {self.action_type}")
 
@@ -747,6 +750,17 @@ class SystemManagerView(BaseView):
         )
         self.btn_search_printers.clicked.connect(lambda: self.run_worker("search_gpo_printers"))
 
+        self.btn_reset_gpo = QPushButton("🔧 Forçar Reinstalação de GPO")
+        self.btn_reset_gpo.setFixedHeight(32)
+        self.btn_reset_gpo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_reset_gpo.setToolTip(
+            "Remove impressoras de rede antigas e força a reaplicação da GPO na sessão do usuário."
+        )
+        self.btn_reset_gpo.setStyleSheet(
+            "background-color: #d9534f; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;"
+        )
+        self.btn_reset_gpo.clicked.connect(self.reset_gpo_printers)
+
         self.btn_load_printers = QPushButton("↻ Listar Impressoras")
         self.btn_load_printers.setFixedHeight(32)
         self.btn_load_printers.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -785,17 +799,6 @@ class SystemManagerView(BaseView):
         self.btn_export_prt.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_export_prt.setStyleSheet("background-color: #17a2b8; color: white; font-weight: bold; padding: 0 14px; border-radius: 4px;")
         self.btn_export_prt.clicked.connect(lambda: self._export_table_csv(self.tbl_printers, "Impressoras"))
-
-        self.btn_reset_gpo = QPushButton("🔧 Forçar Reinstalação de GPO")
-        self.btn_reset_gpo.setFixedHeight(32)
-        self.btn_reset_gpo.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_reset_gpo.setToolTip(
-            "Remove impressoras de rede antigas e força a reaplicação da GPO na sessão do usuário."
-        )
-        self.btn_reset_gpo.setStyleSheet(
-            "background-color: #d9534f; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;"
-        )
-        self.btn_reset_gpo.clicked.connect(self.reset_gpo_printers)
 
         prt_controls.addWidget(self.inp_search_printers, stretch=1)
         prt_controls.addWidget(self.btn_search_printers)
@@ -836,7 +839,6 @@ class SystemManagerView(BaseView):
         time_layout.addSpacing(10)
 
         btn_layout = QHBoxLayout()
-
         self.btn_time_resync = QPushButton("⏱ Sincronizar Hora (Simples)")
         self.btn_time_resync.setFixedHeight(32)
         self.btn_time_resync.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -867,6 +869,40 @@ class SystemManagerView(BaseView):
         time_layout.addWidget(self.txt_time_log)
 
         self.tabs.addTab(self.tab_time, "⏱ Tempo e NTP")
+
+        # --- ABA 6: BITLOCKER ---
+        self.tab_bitlocker = QWidget()
+        bkl_layout = QVBoxLayout(self.tab_bitlocker)
+
+        info_bkl = QLabel("Verifique o status de criptografia dos volumes e obtenha a chave de recuperação do BitLocker.")
+        info_bkl.setStyleSheet("color: #888; font-style: italic;")
+        bkl_layout.addWidget(info_bkl)
+        bkl_layout.addSpacing(10)
+
+        btn_bkl_layout = QHBoxLayout()
+        self.btn_load_bitlocker = QPushButton("🔒 Consultar Status do BitLocker")
+        self.btn_load_bitlocker.setFixedHeight(32)
+        self.btn_load_bitlocker.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_load_bitlocker.setStyleSheet("background-color: #2a7de1; color: white; font-weight: bold; border-radius: 4px; padding: 0 15px;")
+        self.btn_load_bitlocker.clicked.connect(lambda: self.run_worker("get_bitlocker"))
+        btn_bkl_layout.addWidget(self.btn_load_bitlocker)
+
+        btn_bkl_layout.addStretch()
+        bkl_layout.addLayout(btn_bkl_layout)
+        bkl_layout.addSpacing(10)
+
+        self.tbl_bitlocker = QTableWidget(0, 4)
+        self.tbl_bitlocker.setHorizontalHeaderLabels(["Volume", "Status", "Proteção", "Chave de Recuperação"])
+        self.tbl_bitlocker.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.tbl_bitlocker.horizontalHeader().resizeSection(0, 100)
+        self.tbl_bitlocker.horizontalHeader().resizeSection(1, 150)
+        self.tbl_bitlocker.horizontalHeader().resizeSection(2, 150)
+        self.tbl_bitlocker.horizontalHeader().setStretchLastSection(True)
+        self.tbl_bitlocker.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.tbl_bitlocker.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        bkl_layout.addWidget(self.tbl_bitlocker)
+
+        self.tabs.addTab(self.tab_bitlocker, "🔒 BitLocker")
 
         self.tabs.currentChanged.connect(self.on_tab_changed)
         layout.addWidget(self.tabs)
@@ -996,6 +1032,9 @@ class SystemManagerView(BaseView):
         self.btn_reset_gpo.setEnabled(True)
         self.btn_reset_gpo.setText("🔧 Forçar Reinstalação de GPO")
 
+        self.btn_load_bitlocker.setEnabled(True)
+        self.btn_load_bitlocker.setText("🔒 Consultar Status do BitLocker")
+
     def run_worker(self, action_type, extra_params=None):
         target = self.inp_target.text().strip()
         if not target:
@@ -1051,6 +1090,9 @@ class SystemManagerView(BaseView):
             self.txt_time_log.clear()
             mode_str = "RESET COMPLETO" if extra_params and extra_params.get("mode") == "reset" else "SIMPLES"
             self.txt_time_log.append(f"Iniciando sincronização de horário ({mode_str}) para {target}...\n")
+        elif action_type == "get_bitlocker":
+            self.btn_load_bitlocker.setEnabled(False)
+            self.btn_load_bitlocker.setText("⏳ Consultando...")
 
         self.worker = SysManagerWorker(target, action_type, extra_params)
         self.worker.finished.connect(self.on_worker_finished)
@@ -1088,23 +1130,6 @@ class SystemManagerView(BaseView):
         name = self.tbl_svc.item(row, 0).text()
         self.run_worker("manage_service", {"name": name, "action": action})
 
-    def flush_spooler(self):
-        target = self.inp_target.text().strip()
-        if not target:
-            QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
-            return
-
-        reply = QMessageBox.question(
-            self, "Destravar Spooler de Impressão",
-            f"Deseja limpar profundamente o Spooler em {target}?\n\n"
-            "• O serviço 'Spooler' será parado.\n"
-            "• Todos os arquivos .SHD/.SPL presos em C:\\Windows\\System32\\spool\\PRINTERS serão excluídos.\n"
-            "• O serviço será reiniciado automaticamente.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            self.run_worker("flush_spooler")
-
     def reset_gpo_printers(self):
         target = self.inp_target.text().strip()
         if not target:
@@ -1121,6 +1146,23 @@ class SystemManagerView(BaseView):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.run_worker("reset_gpo_printers")
+
+    def flush_spooler(self):
+        target = self.inp_target.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
+            return
+
+        reply = QMessageBox.question(
+            self, "Destravar Spooler de Impressão",
+            f"Deseja limpar profundamente o Spooler em {target}?\n\n"
+            "• O serviço 'Spooler' será parado.\n"
+            "• Todos os arquivos .SHD/.SPL presos em C:\\Windows\\System32\\spool\\PRINTERS serão excluídos.\n"
+            "• O serviço será reiniciado automaticamente.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.run_worker("flush_spooler")
 
     def clear_selected_printer_queue(self):
         row = self.tbl_printers.currentRow()
@@ -1222,7 +1264,6 @@ class SystemManagerView(BaseView):
                 for d in detalhes:
                     self.txt_time_log.append(fix_mojibake(str(d)))
 
-            # Registra no banco de auditoria
             self.exec_repo.record_execution(
                 target_pc=target,
                 script_name="Sincronização de Hora",
@@ -1230,6 +1271,34 @@ class SystemManagerView(BaseView):
                 result_data=json.dumps(data_list[0], ensure_ascii=False) if data_list else "",
                 technician=executor,
                 module="[Gerenciador] Tempo e NTP"
+            )
+            return
+
+        if action_type == "get_bitlocker":
+            self.tbl_bitlocker.setSortingEnabled(False)
+            self.tbl_bitlocker.setRowCount(0)
+
+            log_dict = data_list[0] if (data_list and isinstance(data_list[0], dict)) else {}
+            volumes = log_dict.get("Volumes", [])
+
+            for vol in volumes:
+                r = self.tbl_bitlocker.rowCount()
+                self.tbl_bitlocker.insertRow(r)
+
+                self.tbl_bitlocker.setItem(r, 0, QTableWidgetItem(fix_mojibake(str(vol.get("MountPoint", "")))))
+                self.tbl_bitlocker.setItem(r, 1, QTableWidgetItem(fix_mojibake(str(vol.get("VolumeStatus", "")))))
+                self.tbl_bitlocker.setItem(r, 2, QTableWidgetItem(fix_mojibake(str(vol.get("ProtectionStatus", "")))))
+
+                key_item = QTableWidgetItem(fix_mojibake(str(vol.get("RecoveryKey", ""))))
+                if key_item.text() != "N/A":
+                    key_item.setForeground(Qt.GlobalColor.green)
+                self.tbl_bitlocker.setItem(r, 3, key_item)
+
+            self.tbl_bitlocker.setSortingEnabled(True)
+
+            self.exec_repo.record_execution(
+                target_pc=target, script_name="Consulta BitLocker", status=log_dict.get("StatusFinal", "SUCESSO"),
+                result_data=json.dumps(log_dict, ensure_ascii=False), technician=executor, module="[Gerenciador] BitLocker"
             )
             return
 
@@ -1262,7 +1331,7 @@ class SystemManagerView(BaseView):
                 QMessageBox.information(self, "Laudo Gerado", f"Laudo salvo com sucesso em:\n{file_path}")
             return
 
-        if action_type in ("kill_process", "manage_service", "search_gpo_printers", "flush_spooler", "clear_printer_queue", "remove_printer"):
+        if action_type in ("kill_process", "manage_service", "search_gpo_printers", "reset_gpo_printers", "flush_spooler", "clear_printer_queue", "remove_printer"):
             log_dict = data_list[0] if (data_list and isinstance(data_list[0], dict)) else {}
             status_final = str(log_dict.get("StatusFinal", "SUCESSO"))
             mensagem = fix_mojibake(str(log_dict.get("Mensagem", "Ação concluída.")))

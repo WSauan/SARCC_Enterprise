@@ -19,6 +19,7 @@
     "software/inventory.ps1": "75ac3533f3ad4c078ccc99397c915a57eff6a89e595190acdafcafe0d55e1d71",
     "software/software_action.ps1": "4deef5bbd48172b2e1c6190c34e74ad42ab1c658f133ca241bab942b009429c8",
     "software/software_install.ps1": "059e374932560e6250a2a0f26be5df32b71411ba77e70f584a75820c258744ce",
+    "system_manager/get_bitlocker.ps1": "3d4ad8b4c5f2d52cda4f0bc2111883706700759c34c4809ea3a9521e5c3930fe",
     "system_manager/get_critical_summary.ps1": "2202face319b7fcb369b79e3b7c4c7930cb2d5cf457a9679e506adb677512e55",
     "system_manager/get_events.ps1": "c81c3444de8bf262725dc0c0b553eb811f3e560fda50e0ced9dc0a3a69978756",
     "system_manager/get_printers.ps1": "d7db8aa56b1af3923abbf6b9a469db24f68c74055b81baa7ae6dad882afe3f88",
