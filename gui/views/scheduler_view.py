@@ -54,7 +54,7 @@ class SchedulerView(BaseView):
         row1.addWidget(QLabel("Computador Alvo:"))
         self.inp_target = QLineEdit()
         self.inp_target.setFixedHeight(32)
-        self.inp_target.setPlaceholderText("Ex: HUL-WK-001122E ou 192.168.0.2")
+        self.inp_target.setPlaceholderText("Ex: HUL-WK-... ou 192.168....")
         self.inp_target.textChanged.connect(self._force_uppercase)
         row1.addWidget(self.inp_target, stretch=2)
 

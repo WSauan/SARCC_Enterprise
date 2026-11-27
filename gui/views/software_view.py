@@ -484,7 +484,7 @@ class SoftwareView(BaseView):
 
         self.inp_target = QLineEdit()
         self.inp_target.setFixedHeight(32)
-        self.inp_target.setPlaceholderText("Ex: HUL-WK-001122E ou 192.168.0.2")
+        self.inp_target.setPlaceholderText("Ex: HUL-WK-... ou 192.168....")
         self.inp_target.setStyleSheet("padding: 0 10px;")
         self.inp_target.textChanged.connect(self._force_uppercase)
 
@@ -517,7 +517,7 @@ class SoftwareView(BaseView):
 
         target_layout.addWidget(self.btn_glpi_config)
 
-        target_layout.addWidget(QLabel("Alvo:"))
+        target_layout.addWidget(QLabel("Computador Alvo:"))
         target_layout.addWidget(self.inp_target)
         target_layout.addWidget(self.lbl_motor)
         target_layout.addWidget(self.cmb_engine)

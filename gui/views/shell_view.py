@@ -109,8 +109,8 @@ class ShellView(BaseView):
 
         self.inp_target = QLineEdit()
         self.inp_target.setFixedHeight(32)
-        self.inp_target.setPlaceholderText("Ex: LOCALHOST, HUL-WK-001122E ou 192.168.0.2")
-        self.inp_target.setStyleSheet("padding: 0 10px; font-weight: bold;")
+        self.inp_target.setPlaceholderText("Ex: HUL-WK-... ou 192.168....")
+        self.inp_target.setStyleSheet("padding: 0 10px;")
         self.inp_target.textChanged.connect(self._force_uppercase)
 
         conn_layout.addWidget(QLabel("Computador Alvo:"))

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from PyQt6.QtCore import QDate, QDateTime, Qt, QTime
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -24,6 +25,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.enums import ExecutionStatus
 from core.text_utils import fix_mojibake
 from domain.services.audit_service import AuditService, extract_json_from_result, format_duration
 from gui.views.base_view import sanitize_filename
@@ -102,6 +104,7 @@ class HistoryView(QWidget):
         self.view_mode = "ativos"
         self.sort_col = 3
         self.sort_order = Qt.SortOrder.DescendingOrder
+        self._last_clicked_row = -1 # <--- NOVO: Variável para controlar o Shift+Click
         self._setup_ui()
 
     def _setup_ui(self):
@@ -239,7 +242,13 @@ class HistoryView(QWidget):
 
         self.cmb_filter_status = QComboBox()
         self.cmb_filter_status.setFixedHeight(32)
-        self.cmb_filter_status.addItems(["Todos os Status", "SUCESSO", "ERRO / FALHA", "PENDENTE"])
+        self.cmb_filter_status.addItems([
+            "Todos os Status",
+            ExecutionStatus.SUCCESS.value,
+            ExecutionStatus.ERROR.value,
+            ExecutionStatus.WARNING.value,
+            ExecutionStatus.PENDING.value
+        ])
         self.cmb_filter_status.setStyleSheet("padding: 0 10px; font-weight: bold;")
         self.cmb_filter_status.currentTextChanged.connect(self.apply_filters)
         control_bar.addWidget(self.cmb_filter_status)
@@ -253,7 +262,6 @@ class HistoryView(QWidget):
 
         layout.addWidget(filter_group)
 
-        # Checkbox de seleção alinhado diretamente sobre a 1ª coluna ([✓]) da tabela
         selection_bar = QHBoxLayout()
         selection_bar.setContentsMargins(6, 0, 0, 0)
         self.chk_select_all = QCheckBox("Selecionar Todos (Visíveis)")
@@ -261,7 +269,18 @@ class HistoryView(QWidget):
         self.chk_select_all.setStyleSheet("font-weight: bold; color: #4a90e2;")
         self.chk_select_all.stateChanged.connect(self.toggle_select_all)
         selection_bar.addWidget(self.chk_select_all)
+
         selection_bar.addStretch()
+
+        selection_bar.addWidget(QLabel("Exibir:"))
+        self.cmb_limit = QComboBox()
+        self.cmb_limit.setFixedHeight(24)
+        self.cmb_limit.addItems(["10", "20", "50", "100", "Todos"])
+        self.cmb_limit.setCurrentText("50")
+        self.cmb_limit.setStyleSheet("padding: 0 5px;")
+        self.cmb_limit.currentTextChanged.connect(self.load_logs)
+        selection_bar.addWidget(self.cmb_limit)
+
         layout.addLayout(selection_bar)
 
         self.tree = QTreeWidget()
@@ -270,7 +289,7 @@ class HistoryView(QWidget):
             "Módulo", "Ação / Script", "Técnico", "Status", "Ações"
         ])
         self.tree.setAlternatingRowColors(True)
-        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setSortingEnabled(True)
         self.tree.setRootIsDecorated(False)
 
@@ -290,7 +309,39 @@ class HistoryView(QWidget):
 
         self.tree.header().sectionClicked.connect(self.on_header_clicked)
         self.tree.itemDoubleClicked.connect(self.on_item_double_clicked)
+        self.tree.itemClicked.connect(self.on_item_clicked) # <--- NOVO: Intercepta o clique na linha
         layout.addWidget(self.tree)
+
+    def on_item_clicked(self, item, column):
+        """Lógica para Shift+Click no Checkbox"""
+        current_row = self.tree.indexOfTopLevelItem(item)
+
+        # O Qt não expõe o estado do Shift diretamente no evento itemClicked em todas as versões,
+        # então verificamos via QApplication
+        modifiers = QApplication.keyboardModifiers()
+
+        # 1. Se for Shift+Click e já houver uma linha anterior clicada
+        if modifiers == Qt.KeyboardModifier.ShiftModifier and self._last_clicked_row != -1:
+            start_row = min(self._last_clicked_row, current_row)
+            end_row = max(self._last_clicked_row, current_row)
+
+            # Pega o estado da linha onde o Shift+Click começou
+            start_item = self.tree.topLevelItem(self._last_clicked_row)
+            state_to_apply = start_item.checkState(0)
+
+            # Aplica o mesmo estado para todas as linhas no intervalo
+            for r in range(start_row, end_row + 1):
+                row_item = self.tree.topLevelItem(r)
+                if row_item and not row_item.isHidden():
+                    row_item.setCheckState(0, state_to_apply)
+        else:
+            # 2. Clique normal (sem shift): Alterna o checkbox da linha atual
+            current_state = item.checkState(0)
+            new_state = Qt.CheckState.Unchecked if current_state == Qt.CheckState.Checked else Qt.CheckState.Checked
+            item.setCheckState(0, new_state)
+
+        # 3. Atualiza a última linha clicada (para o próximo Shift+Click)
+        self._last_clicked_row = current_row
 
     def _on_date_filter_toggled(self, enabled: bool):
         self.cmb_date_mode.setEnabled(enabled)
@@ -330,7 +381,6 @@ class HistoryView(QWidget):
         return format_duration(seconds)
 
     def on_header_clicked(self, logical_index):
-        # Coluna 0 ([✓]) e Coluna 10 (Ações) não possuem ordenação
         if logical_index in [0, 10]:
             self.tree.sortItems(self.sort_col, self.sort_order)
             self.tree.header().setSortIndicator(self.sort_col, self.sort_order)
@@ -365,12 +415,8 @@ class HistoryView(QWidget):
             match = True
 
             if status_filter != "Todos os Status":
-                val = item.text(9).upper()
-                if status_filter == "SUCESSO" and "SUCESSO" not in val:
-                    match = False
-                elif status_filter == "ERRO / FALHA" and not ("ERRO" in val or "FALHA" in val or "ALERTA" in val):
-                    match = False
-                elif status_filter == "PENDENTE" and "PENDENTE" not in val:
+                val = item.text(9)
+                if val != status_filter:
                     match = False
 
             if match and search_text:
@@ -481,7 +527,13 @@ class HistoryView(QWidget):
         self.tree.setSortingEnabled(False)
         self.tree.clear()
 
-        rows = self.repo.list_executions(deleted=(self.view_mode == "lixeira"), limit=1000)
+        # Reseta o controle de click
+        self._last_clicked_row = -1
+
+        limit_str = self.cmb_limit.currentText()
+        limit = 10000 if limit_str == "Todos" else int(limit_str)
+
+        rows = self.repo.list_executions(deleted=(self.view_mode == "lixeira"), limit=limit)
 
         for row in rows:
             log_id, start_time, target_pc, script_name, status, result_data = row[:6]
@@ -495,17 +547,18 @@ class HistoryView(QWidget):
             duracao_str = metrics["duracao"]
             raw_seconds = metrics["seconds"]
 
+            status_clean = ExecutionStatus.normalize(status)
+
             child_item = LogTreeWidgetItem(self.tree, [
                 "", f"🖥️ {pc}", str(log_id), inicio_str, fim_str, duracao_str,
-                str(module), str(script_name), str(technician), str(status), ""
+                str(module), str(script_name), str(technician), status_clean, ""
             ])
 
-            status_up = str(status).upper()
-            if "SUCESSO" in status_up:
+            if status_clean == ExecutionStatus.SUCCESS.value:
                 child_item.setForeground(9, Qt.GlobalColor.green)
-            elif "ERRO" in status_up or "FALHA" in status_up:
+            elif status_clean == ExecutionStatus.ERROR.value:
                 child_item.setForeground(9, Qt.GlobalColor.red)
-            elif "ALERTA" in status_up:
+            elif status_clean == ExecutionStatus.WARNING.value:
                 child_item.setForeground(9, Qt.GlobalColor.darkYellow)
 
             child_item.setCheckState(0, Qt.CheckState.Unchecked)

@@ -340,7 +340,7 @@ class ExecutionView(BaseView):
 
         self.target_input = QLineEdit()
         self.target_input.setFixedHeight(32)
-        self.target_input.setPlaceholderText("Ex: LOCALHOST, 192.168.0.2, HUL-WK-001122E...")
+        self.target_input.setPlaceholderText("Ex: HUL-WK-... ou 192.168....")
         self.target_input.setStyleSheet("padding: 0 10px;")
         self.target_input.textChanged.connect(self._force_uppercase)
 
@@ -370,7 +370,7 @@ class ExecutionView(BaseView):
         self.btn_clear_targets.setStyleSheet("background-color: #d9534f; color: white; padding: 0 15px; font-weight: bold; border-radius: 4px;")
         self.btn_clear_targets.clicked.connect(self.target_input.clear)
 
-        target_layout.addWidget(QLabel("IPs ou Hostnames:"))
+        target_layout.addWidget(QLabel("Computador Alvo:"))
         target_layout.addWidget(self.target_input, stretch=1)
         target_layout.addWidget(self.btn_discover_targets)
         target_layout.addWidget(self.btn_filter_online)

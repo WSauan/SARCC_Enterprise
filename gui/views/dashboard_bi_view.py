@@ -1,5 +1,5 @@
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QComboBox, QGroupBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+from PyQt6.QtWidgets import QComboBox, QCompleter, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout
 
 from gui.views.base_view import BaseView
 from gui.widgets.bi_charts import BarChartWidget, DonutChartWidget
@@ -25,16 +25,33 @@ class DashboardBIView(BaseView):
         header_layout.addWidget(title)
         header_layout.addStretch()
 
+        # Filtro de Período Padronizado
         header_layout.addWidget(QLabel("Período:"))
         self.cmb_period = QComboBox()
-        self.cmb_period.addItem("Todo o período", 0)
-        self.cmb_period.addItem("Hoje", 1)
-        self.cmb_period.addItem("Últimos 7 dias", 7)
-        self.cmb_period.addItem("Últimos 30 dias", 30)
         self.cmb_period.setFixedHeight(32)
-        self.cmb_period.setFixedWidth(150)
+        self.cmb_period.addItems([
+            "Todo o período",
+            "Hoje",
+            "Últimos 7 dias",
+            "Últimos 30 dias"
+        ])
         self.cmb_period.currentIndexChanged.connect(self.refresh_data)
         header_layout.addWidget(self.cmb_period)
+
+        # Filtro por Alvo com Autocomplete
+        header_layout.addWidget(QLabel("Filtrar por Alvo:"))
+        self.inp_target_filter = QLineEdit()
+        self.inp_target_filter.setFixedHeight(32)
+        self.inp_target_filter.setPlaceholderText("Ex: HUL-WK-... ou 192.168....")
+        self.inp_target_filter.setFixedWidth(250)
+        self.inp_target_filter.textChanged.connect(self.refresh_data)
+
+        self.target_completer = QCompleter([])
+        self.target_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.target_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.inp_target_filter.setCompleter(self.target_completer)
+
+        header_layout.addWidget(self.inp_target_filter)
 
         self.btn_refresh = QPushButton("↻ Atualizar")
         self.btn_refresh.setFixedHeight(32)
@@ -45,13 +62,13 @@ class DashboardBIView(BaseView):
 
         layout.addLayout(header_layout)
 
-        # Cards de KPI (Totais)
+        # Cards de KPI
         kpi_layout = QHBoxLayout()
         kpi_layout.setSpacing(15)
 
-        self.lbl_total_exec = self._create_kpi_card("Total de Execuções", "0", "#4a90e2")
-        self.lbl_taxa_sucesso = self._create_kpi_card("Taxa de Sucesso", "0%", "#4CAF50")
-        self.lbl_total_maquinas = self._create_kpi_card("Máquinas Atendidas", "0", "#f0ad4e")
+        self.lbl_total_exec, self.lbl_val_total_exec = self._create_kpi_card("Total de Execuções", "0", "#4a90e2")
+        self.lbl_taxa_sucesso, self.lbl_val_taxa_sucesso = self._create_kpi_card("Taxa de Sucesso", "0%", "#4CAF50")
+        self.lbl_total_maquinas, self.lbl_val_total_maquinas = self._create_kpi_card("Máquinas Atendidas", "0", "#f0ad4e")
 
         kpi_layout.addWidget(self.lbl_total_exec)
         kpi_layout.addWidget(self.lbl_taxa_sucesso)
@@ -79,13 +96,31 @@ class DashboardBIView(BaseView):
         lbl_val.setStyleSheet(f"font-size: 32px; font-weight: bold; color: {color};")
         lbl_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(lbl_val)
-        return card # Retorna o widget, mas precisamos do Label interno, então faremos um hack rápido
+
+        return card, lbl_val
 
     def refresh_data(self):
-        days = self.cmb_period.currentData()
+        # Atualiza as sugestões de alvos no autocomplete
+        targets = self.repo.get_unique_targets()
+        self.target_completer.model().setStringList(targets)
+
+        # Traduz a seleção do combo para dias (usado pelo SQLite)
+        period_text = self.cmb_period.currentText()
+        if period_text == "Todo o período":
+            days = 0
+        elif period_text == "Hoje":
+            days = 1
+        elif period_text == "Últimos 7 dias":
+            days = 7
+        elif period_text == "Últimos 30 dias":
+            days = 30
+        else:
+            days = 0
+
+        target_filter = self.inp_target_filter.text().strip()
 
         # 1. Métricas de Status
-        metrics = self.repo.get_bi_metrics(days)
+        metrics = self.repo.get_bi_metrics(days, target_filter)
         self.donut_chart.set_data(metrics["SUCESSO"], metrics["ALERTA"], metrics["FALHA"])
 
         total = sum(metrics.values())
@@ -93,20 +128,16 @@ class DashboardBIView(BaseView):
         taxa = (sucesso / total * 100) if total > 0 else 0
 
         # 2. Top Scripts
-        top_scripts = self.repo.get_top_scripts(days)
+        top_scripts = self.repo.get_top_scripts(days, target_filter)
         self.bar_chart.set_data(top_scripts)
 
         # 3. Contador de máquinas
-        maquinas = self.repo.get_unique_machines_count(days)
+        maquinas = self.repo.get_unique_machines_count(days, target_filter)
 
-        # Atualiza os KPIs (acessando o QLabel dentro do layout do QGroupBox)
-        def update_card(card, val_str):
-            lbl = card.layout().itemAt(0).widget()
-            lbl.setText(val_str)
-
-        update_card(self.lbl_total_exec, str(total))
-        update_card(self.lbl_taxa_sucesso, f"{taxa:.1f}%")
-        update_card(self.lbl_total_maquinas, str(maquinas))
+        # Atualiza os valores nos Cards de KPI
+        self.lbl_val_total_exec.setText(str(total))
+        self.lbl_val_taxa_sucesso.setText(f"{taxa:.1f}%")
+        self.lbl_val_total_maquinas.setText(str(maquinas))
 
     def showEvent(self, event):
         super().showEvent(event)

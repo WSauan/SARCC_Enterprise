@@ -2,8 +2,8 @@
 Fonte única de verdade para a versão e metadados do SARCC Enterprise.
 """
 
-__version__ = "3.0.0"
-__build_date__ = "2026-11-25"
+__version__ = "3.2.0"
+__build_date__ = "2026-11-27"
 APP_TITLE = "SARCC Enterprise"
 
 

@@ -1,5 +1,28 @@
 # Histórico de Versões (Changelog) — SARCC Enterprise
 
+## [v3.2.0] — 2026-11-27
+### 🎨 Sprint de UI/UX, Refinamento de Gráficos e Atalhos
+
+* **Atalhos de Teclado (`ScriptsView`):** O Gestor de Scripts agora suporta atalhos nativos: `Ctrl+S` (Salvar), `Ctrl+O` (Importar) e `Delete` (Excluir).
+* **Exclusão em Lote (`ScriptsView`):** Agora é possível selecionar múltiplos scripts (usando `Ctrl` ou `Shift`) e excluir todos de uma vez.
+* **Seleção Múltipla no Histórico (`HistoryView`):** Implementado suporte nativo a `Shift+Click` e `Ctrl+Click` nos checkboxes, permitindo selecionar dezenas de logs instantaneamente.
+* **Paginação no Histórico (`HistoryView`):** Novo seletor para exibir os últimos 10, 20, 50, 100 ou todos os registros. Otimização para eliminar as "travadas" ao abrir a tela.
+* **Filtro por Alvo com Autocomplete (`DashboardBIView`):** O Painel BI agora permite filtrar as métricas por uma máquina específica, sugerindo os hosts que já existem no banco.
+* **Legendas e Refinamento de Gráficos (`bi_charts.py`):** O gráfico de Donut agora possui legenda vertical e o Gráfico de Barras exibe os números no final das barras com contraste adequado.
+* **Padronização Global (`app_window.py`):** Aplicado o estilo `Segoe UI` via CSS para todos os componentes da aplicação.
+* **Padronização de Labels (`Views`):** Todos os campos de entrada de hostname foram renomeados para **"Computador Alvo:"**, mantendo a consistência visual.
+
+## [v3.1.0] — 2026-11-25
+### 🚀 Painel de Indicadores, Sincronização NTP, BitLocker e Reset de GPO
+
+* **Painel de Indicadores (BI) (`DashboardBIView`):** Nova tela analítica com KPIs em tempo real (Taxa de Sucesso, Total de Execuções, Máquinas Atendidas) e gráficos nativos (Donut de Status e Top 5 Scripts) construídos via `QPainter`.
+* **Sincronização de Horário (`SystemManagerView`):** Nova aba "Tempo e NTP" com opção de Sincronização Simples (`w32tm /resync`) e Reset Completo do serviço com reconfiguração para o domínio (`domhier`).
+* **Consulta de BitLocker (`SystemManagerView`):** Nova aba "BitLocker" que consulta o status dos volumes criptografados e extrai a chave de recuperação de 48 dígitos.
+* **Forçar Reinstalação de GPO (`SystemManagerView`):** Novo botão "Reset GPO de Impressoras" que remove mapeamentos antigos e força a reaplicação da política (`gpupdate /force`).
+* **Arquitetura de Timeout em 3 Camadas (`RemoteConnectionManager`):** Timeout configurável que lê diretivas no próprio script (`# @timeout:`), sobrescreve o tempo da categoria e previne o travamento da fila.
+* **Integração Segura DPAPI (`GlpiConfigDialog`):** Credenciais OAuth do GLPI salvas criptografadas no cofre do Windows.
+* **Normalização de Status (`Enums`):** Criação do `core/enums.py` para padronizar os status de execução (Sucesso, Alerta, Erro).
+
 ## [v3.0.0] — 2026-11-25
 ### 🛡️ Hardening de Segurança, Arquitetura de Timeout e Qualidade de Código
 

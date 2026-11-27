@@ -276,6 +276,15 @@ class MainWindow(QMainWindow):
             selection-background-color: {primary_blue};
             selection-color: #ffffff;
         }}
+
+                /* --- PADRONIZAÇÃO GLOBAL DE FONTES --- */
+        QWidget {{
+            font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 13px;
+        }}
+        QLineEdit, QComboBox, QTextEdit {{
+            font-size: 13px;
+        }}
         """
 
         base_sheet = qdarktheme.load_stylesheet(theme)

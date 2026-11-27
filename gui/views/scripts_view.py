@@ -1,5 +1,5 @@
 from PyQt6.QtCore import QRegularExpression, Qt
-from PyQt6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
+from PyQt6.QtGui import QColor, QFont, QKeySequence, QShortcut, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from core.config import CATEGORY_TIMEOUTS
 from core.logger import get_logger
 from domain.services.script_service import ScriptService
 from gui.views.base_view import BaseView, sanitize_filename
@@ -160,17 +161,24 @@ class ScriptsView(BaseView):
         self.inp_nome = QLineEdit()
         self.inp_nome.setFixedHeight(32)
         self.inp_nome.setPlaceholderText("Nome do Script (ex: Limpar Temp)")
-        self.inp_nome.setStyleSheet("padding: 0 10px; font-size: 14px; font-weight: bold;")
+        self.inp_nome.setStyleSheet("padding: 0 10px; font-size: 14px;")
 
         self.cmb_categoria = QComboBox()
         self.cmb_categoria.setFixedHeight(32)
         self.cmb_categoria.addItems(["Manutenção", "Rede", "Segurança", "Instalação", "Diagnóstico", "Outros"])
         self.cmb_categoria.setStyleSheet("padding: 0 10px;")
+        self.cmb_categoria.currentTextChanged.connect(self._update_timeout_label)
 
         row1_layout.addWidget(QLabel("Nome:"))
         row1_layout.addWidget(self.inp_nome, stretch=2)
         row1_layout.addWidget(QLabel("Categoria:"))
         row1_layout.addWidget(self.cmb_categoria, stretch=1)
+
+        # NOVO: Label de Timeout
+        self.lbl_timeout_info = QLabel("⏱ Timeout Padrão: -")
+        self.lbl_timeout_info.setStyleSheet("color: #f0ad4e; font-weight: bold; margin-left: 10px;")
+        row1_layout.addWidget(self.lbl_timeout_info)
+
         editor_layout.addLayout(row1_layout)
 
         row2_layout = QHBoxLayout()
@@ -219,6 +227,28 @@ class ScriptsView(BaseView):
         splitter.addWidget(editor_group)
         splitter.setSizes([350, 650])
         layout.addWidget(splitter)
+
+        # --- Atalhos de Teclado ---
+        shortcut_save = QShortcut(QKeySequence.StandardKey.Save, self)
+        shortcut_save.activated.connect(self.save_script)
+
+        shortcut_open = QShortcut(QKeySequence.StandardKey.Open, self)
+        shortcut_open.activated.connect(self.import_script)
+
+        shortcut_delete = QShortcut(QKeySequence.StandardKey.Delete, self)
+        shortcut_delete.activated.connect(self.delete_script)
+
+    def _update_timeout_label(self, categoria: str = None):
+        if categoria is None:
+            categoria = self.cmb_categoria.currentText()
+
+        timeout = CATEGORY_TIMEOUTS.get(categoria, 300)
+        if timeout >= 3600:
+            tempo_str = f"{timeout // 3600}h"
+        else:
+            tempo_str = f"{timeout // 60} min"
+
+        self.lbl_timeout_info.setText(f"⏱ Timeout Padrão: {tempo_str}")
 
     def load_scripts_list(self):
         self.tree_scripts.clear()
@@ -277,6 +307,7 @@ class ScriptsView(BaseView):
         self.txt_codigo.setPlainText("")
         self.btn_excluir.setEnabled(False)
         self.tree_scripts.clearSelection()
+        self._update_timeout_label()
         self.inp_nome.setFocus()
 
     def on_script_selected(self, item, column):
@@ -299,6 +330,8 @@ class ScriptsView(BaseView):
 
         self.txt_codigo.setPlainText(data["conteudo"] if data["conteudo"] else "")
         self.btn_excluir.setEnabled(True)
+
+        self._update_timeout_label(self.cmb_categoria.currentText())
 
     def import_script(self):
         arquivos, _ = QFileDialog.getOpenFileNames(
@@ -399,26 +432,32 @@ class ScriptsView(BaseView):
                     break
 
     def delete_script(self):
-        if self.current_script_id is None:
+        selected_items = self.tree_scripts.selectedItems()
+        scripts_to_delete = []
+        for item in selected_items:
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data:
+                scripts_to_delete.append(data)
+
+        if not scripts_to_delete:
             return
 
         reply = QMessageBox.question(
             self, "Excluir",
-            "Tem certeza que deseja excluir este script permanentemente?",
+            f"Tem certeza que deseja excluir {len(scripts_to_delete)} script(s) permanentemente?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                script_id = self.current_script_id
-                self.repo.delete(script_id)
-                log.info(f"Script excluído: id={script_id}")
-                QMessageBox.information(self, "Excluído", "Script removido do banco de dados.")
+                for script in scripts_to_delete:
+                    self.repo.delete(script["id"])
+
+                QMessageBox.information(self, "Excluído", f"{len(scripts_to_delete)} script(s) removido(s).")
                 self.prepare_new_script()
                 self.load_scripts_list()
             except Exception as e:
-                log.error(f"Falha ao excluir script id={self.current_script_id}: {e}", exc_info=True)
-                QMessageBox.critical(self, "Erro ao Excluir", f"Não foi possível remover o script:\n{e}")
+                QMessageBox.critical(self, "Erro ao Excluir", f"Erro: {e}")
 
     def showEvent(self, event):
         super().showEvent(event)

@@ -457,11 +457,11 @@ class SystemManagerView(BaseView):
 
         self.inp_target = QLineEdit()
         self.inp_target.setFixedHeight(32)
-        self.inp_target.setPlaceholderText("Ex: HUL-WK-244377E ou 10.8.128.14")
+        self.inp_target.setPlaceholderText("Ex: HUL-WK-... ou 192.168....")
         self.inp_target.setStyleSheet("padding: 0 10px;")
         self.inp_target.textChanged.connect(self._force_uppercase)
 
-        target_layout.addWidget(QLabel("Hostname / IP:"))
+        target_layout.addWidget(QLabel("Computador Alvo:"))
         target_layout.addWidget(self.inp_target, stretch=1)
         layout.addWidget(target_group)
 

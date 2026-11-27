@@ -430,7 +430,7 @@ class DashboardView(BaseView):
 
         self.inp_target = QLineEdit()
         self.inp_target.setFixedHeight(32)
-        self.inp_target.setPlaceholderText("Ex: HUL-WK-001122E ou 192.168.0.2")
+        self.inp_target.setPlaceholderText("Ex: HUL-WK-... ou 192.168....")
         self.inp_target.setStyleSheet("padding: 0 10px;")
         self.inp_target.textChanged.connect(self._force_uppercase)
 
@@ -443,7 +443,7 @@ class DashboardView(BaseView):
         self.lbl_last_sync = QLabel(" Última atualização: -")
         self.lbl_last_sync.setStyleSheet("color: #888; font-style: italic; font-weight: bold;")
 
-        target_layout.addWidget(QLabel("Alvo:"))
+        target_layout.addWidget(QLabel("Computador Alvo:"))
         target_layout.addWidget(self.inp_target)
         target_layout.addWidget(self.btn_fetch)
         target_layout.addWidget(self.lbl_last_sync)
