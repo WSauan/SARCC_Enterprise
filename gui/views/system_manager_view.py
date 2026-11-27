@@ -389,6 +389,12 @@ class SysManagerWorker(QThread):
                 printer_b64=self._b64(self.extra_params.get("printer_name", "")),
             )
 
+        if self.action_type == "sync_time":
+            return load_ps_template(
+                "system_manager", "sync_time",
+                mode=self.extra_params.get("mode", "resync")
+            )
+
         raise PsTemplateError(f"action_type desconhecido: {self.action_type}")
 
     def run(self):
@@ -803,6 +809,50 @@ class SystemManagerView(BaseView):
 
         self.tabs.addTab(self.tab_printers, "🖨️ Impressoras & Spooler")
 
+        # --- ABA 5: TEMPO E NTP ---
+        self.tab_time = QWidget()
+        time_layout = QVBoxLayout(self.tab_time)
+
+        info = QLabel(
+            "Use esta aba para corrigir problemas de relógio dessincronizado (causador de falhas de Kerberos e login)."
+        )
+        info.setStyleSheet("color: #888; font-style: italic;")
+        time_layout.addWidget(info)
+        time_layout.addSpacing(10)
+
+        btn_layout = QHBoxLayout()
+
+        self.btn_time_resync = QPushButton("⏱ Sincronizar Hora (Simples)")
+        self.btn_time_resync.setFixedHeight(32)
+        self.btn_time_resync.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_time_resync.setStyleSheet("background-color: #2a7de1; color: white; font-weight: bold; border-radius: 4px; padding: 0 15px;")
+        self.btn_time_resync.clicked.connect(lambda: self.run_worker("sync_time", {"mode": "resync"}))
+        btn_layout.addWidget(self.btn_time_resync)
+
+        self.btn_time_reset = QPushButton("🔄 Resetar Relógio (Domínio)")
+        self.btn_time_reset.setFixedHeight(32)
+        self.btn_time_reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_time_reset.setStyleSheet("background-color: #f0ad4e; color: black; font-weight: bold; border-radius: 4px; padding: 0 15px;")
+        self.btn_time_reset.clicked.connect(lambda: self.run_worker("sync_time", {"mode": "reset"}))
+        btn_layout.addWidget(self.btn_time_reset)
+
+        btn_layout.addStretch()
+        time_layout.addLayout(btn_layout)
+
+        log_label = QLabel("Retorno do Comando (W32TM):")
+        log_label.setStyleSheet("font-weight: bold; margin-top: 15px;")
+        time_layout.addWidget(log_label)
+
+        self.txt_time_log = QTextEdit()
+        self.txt_time_log.setReadOnly(True)
+        self.txt_time_log.setStyleSheet(
+            "font-family: Consolas; font-size: 12px; "
+            "background-color: #1e1e1e; color: #d4d4d4; padding: 10px; border: 1px solid #444;"
+        )
+        time_layout.addWidget(self.txt_time_log)
+
+        self.tabs.addTab(self.tab_time, "⏱ Tempo e NTP")
+
         self.tabs.currentChanged.connect(self.on_tab_changed)
         layout.addWidget(self.tabs)
 
@@ -925,6 +975,9 @@ class SystemManagerView(BaseView):
         self.btn_flush_spooler.setEnabled(True)
         self.btn_flush_spooler.setText("🧹 Destravar Spooler (Limpar Tudo)")
 
+        self.btn_time_resync.setEnabled(True)
+        self.btn_time_reset.setEnabled(True)
+
     def run_worker(self, action_type, extra_params=None):
         target = self.inp_target.text().strip()
         if not target:
@@ -971,6 +1024,12 @@ class SystemManagerView(BaseView):
         elif action_type == "flush_spooler":
             self.btn_flush_spooler.setEnabled(False)
             self.btn_flush_spooler.setText("⏳ Destravando...")
+        elif action_type == "sync_time":
+            self.btn_time_resync.setEnabled(False)
+            self.btn_time_reset.setEnabled(False)
+            self.txt_time_log.clear()
+            mode_str = "RESET COMPLETO" if extra_params and extra_params.get("mode") == "reset" else "SIMPLES"
+            self.txt_time_log.append(f"Iniciando sincronização de horário ({mode_str}) para {target}...\n")
 
         self.worker = SysManagerWorker(target, action_type, extra_params)
         self.worker.finished.connect(self.on_worker_finished)
@@ -1111,6 +1170,29 @@ class SystemManagerView(BaseView):
 
         if action_type == "get_critical_summary":
             self.populate_critical_summary(data_list)
+            return
+
+        if action_type == "sync_time":
+            if data_list and isinstance(data_list[0], dict):
+                data = data_list[0]
+                msg = fix_mojibake(str(data.get("Mensagem", "Concluído.")))
+                detalhes = data.get("Detalhes", [])
+
+                self.txt_time_log.append(f"Status: {data.get('StatusFinal')}")
+                self.txt_time_log.append(msg)
+                self.txt_time_log.append("-" * 60)
+                for d in detalhes:
+                    self.txt_time_log.append(fix_mojibake(str(d)))
+
+            # Registra no banco de auditoria
+            self.exec_repo.record_execution(
+                target_pc=target,
+                script_name="Sincronização de Hora",
+                status=data_list[0].get("StatusFinal", "SUCESSO") if data_list else "ERRO",
+                result_data=json.dumps(data_list[0], ensure_ascii=False) if data_list else "",
+                technician=executor,
+                module="[Gerenciador] Tempo e NTP"
+            )
             return
 
         if action_type == "generate_warranty_report":
