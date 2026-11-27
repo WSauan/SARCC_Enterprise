@@ -20,6 +20,7 @@ from core.logger import get_logger
 from core.resources import resource_path
 from core.task_queue import TaskQueueManager
 from core.version import __version__
+from gui.views.dashboard_bi_view import DashboardBIView
 from gui.views.dashboard_view import DashboardView
 from gui.views.execution_view import ExecutionView
 from gui.views.help_view import HelpView
@@ -112,12 +113,13 @@ class MainWindow(QMainWindow):
         self.btn_scheduler = QPushButton("Automação (Agendador)")
         self.btn_scripts = QPushButton("Gestor de Scripts")
         self.btn_history = QPushButton("Histórico de Logs")
+        self.btn_bi = QPushButton("Painel de Indicadores")
         self.btn_help = QPushButton("Sobre & Documentação")
 
         self.menu_buttons = [
             self.btn_dashboard, self.btn_shell, self.btn_sysman,
             self.btn_execution, self.btn_software, self.btn_scheduler,
-            self.btn_scripts, self.btn_history, self.btn_help
+            self.btn_scripts, self.btn_history, self.btn_bi, self.btn_help
         ]
 
         for btn in self.menu_buttons:
@@ -160,6 +162,7 @@ class MainWindow(QMainWindow):
         self.scheduler_view = SchedulerView(main_window_ref=self)
         self.scripts_view = ScriptsView(main_window_ref=self)
         self.history_view = HistoryView(main_window_ref=self)
+        self.bi_view = DashboardBIView(main_window_ref=self)
         self.help_view = HelpView(main_window_ref=self)
 
         self.stacked_widget.addWidget(self.dashboard_view)  # 0
@@ -170,7 +173,8 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.scheduler_view)  # 5
         self.stacked_widget.addWidget(self.scripts_view)    # 6
         self.stacked_widget.addWidget(self.history_view)    # 7
-        self.stacked_widget.addWidget(self.help_view)       # 8
+        self.stacked_widget.addWidget(self.bi_view)         # 8
+        self.stacked_widget.addWidget(self.help_view)       # 9
 
         self.btn_dashboard.clicked.connect(lambda checked, i=0: self.set_active_menu(i))
         self.btn_shell.clicked.connect(lambda checked, i=1: self.set_active_menu(i))
@@ -180,7 +184,8 @@ class MainWindow(QMainWindow):
         self.btn_scheduler.clicked.connect(lambda checked, i=5: self.set_active_menu(i))
         self.btn_scripts.clicked.connect(lambda checked, i=6: self.set_active_menu(i))
         self.btn_history.clicked.connect(lambda checked, i=7: self.set_active_menu(i))
-        self.btn_help.clicked.connect(lambda checked, i=8: self.set_active_menu(i))
+        self.btn_bi.clicked.connect(lambda checked, i=8: self.set_active_menu(i))
+        self.btn_help.clicked.connect(lambda checked, i=9: self.set_active_menu(i))
 
         self.set_active_menu(0)
 
@@ -288,6 +293,7 @@ class MainWindow(QMainWindow):
             "Gestor de Scripts Automáticos",
             "Histórico e Auditoria por Máquina",
             "Lixeira (Logs Excluídos)",
+            "Painel de Indicadores (BI)",
             "Sobre & Documentação do Sistema",
         ]
 

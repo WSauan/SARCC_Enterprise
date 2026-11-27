@@ -105,3 +105,63 @@ class ExecutionRepository:
             cursor.execute("DELETE FROM executions WHERE excluido = 1")
             conn.commit()
             return cursor.rowcount
+
+    def get_bi_metrics(self, days: int = 0) -> dict:
+        """Retorna contadores de sucesso, alerta e falha. Se days=0, considera todo o período."""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+
+            query = "SELECT status, COUNT(*) FROM executions WHERE excluido = 0"
+            params = []
+
+            if days > 0:
+                query += " AND start_time >= date('now', ?)"
+                params.append(f'-{days} days')
+
+            query += " GROUP BY status"
+            cursor.execute(query, params)
+
+            rows = cursor.fetchall()
+
+            metrics = {"SUCESSO": 0, "ALERTA": 0, "FALHA": 0}
+            for status, count in rows:
+                s = str(status).upper()
+                if "SUCESSO" in s:
+                    metrics["SUCESSO"] += count
+                elif "ALERTA" in s:
+                    metrics["ALERTA"] += count
+                else:
+                    metrics["FALHA"] += count
+
+            return metrics
+
+    def get_top_scripts(self, days: int = 0, limit: int = 5) -> List[Tuple[str, int]]:
+        """Retorna os scripts mais executados."""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            query = "SELECT script_name, COUNT(*) as qtd FROM executions WHERE excluido = 0"
+            params = []
+
+            if days > 0:
+                query += " AND start_time >= date('now', ?)"
+                params.append(f'-{days} days')
+
+            query += " GROUP BY script_name ORDER BY qtd DESC LIMIT ?"
+            params.append(limit)
+
+            cursor.execute(query, params)
+            return cursor.fetchall()
+
+    def get_unique_machines_count(self, days: int = 0) -> int:
+        """Retorna o total de máquinas únicas atendidas."""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            query = "SELECT COUNT(DISTINCT target_pc) FROM executions WHERE excluido = 0"
+            params = []
+
+            if days > 0:
+                query += " AND start_time >= date('now', ?)"
+                params.append(f'-{days} days')
+
+            cursor.execute(query, params)
+            return cursor.fetchone()[0]
