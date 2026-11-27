@@ -395,6 +395,9 @@ class SysManagerWorker(QThread):
                 mode=self.extra_params.get("mode", "resync")
             )
 
+        if self.action_type == "reset_gpo_printers":
+            return load_ps_template("system_manager", "reset_gpo_printers")
+
         raise PsTemplateError(f"action_type desconhecido: {self.action_type}")
 
     def run(self):
@@ -783,8 +786,20 @@ class SystemManagerView(BaseView):
         self.btn_export_prt.setStyleSheet("background-color: #17a2b8; color: white; font-weight: bold; padding: 0 14px; border-radius: 4px;")
         self.btn_export_prt.clicked.connect(lambda: self._export_table_csv(self.tbl_printers, "Impressoras"))
 
+        self.btn_reset_gpo = QPushButton("🔧 Forçar Reinstalação de GPO")
+        self.btn_reset_gpo.setFixedHeight(32)
+        self.btn_reset_gpo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_reset_gpo.setToolTip(
+            "Remove impressoras de rede antigas e força a reaplicação da GPO na sessão do usuário."
+        )
+        self.btn_reset_gpo.setStyleSheet(
+            "background-color: #d9534f; color: white; font-weight: bold; padding: 0 15px; border-radius: 4px;"
+        )
+        self.btn_reset_gpo.clicked.connect(self.reset_gpo_printers)
+
         prt_controls.addWidget(self.inp_search_printers, stretch=1)
         prt_controls.addWidget(self.btn_search_printers)
+        prt_controls.addWidget(self.btn_reset_gpo)
         prt_controls.addWidget(self.btn_load_printers)
         prt_controls.addWidget(self.btn_flush_spooler)
         prt_controls.addWidget(self.btn_clear_queue)
@@ -978,6 +993,9 @@ class SystemManagerView(BaseView):
         self.btn_time_resync.setEnabled(True)
         self.btn_time_reset.setEnabled(True)
 
+        self.btn_reset_gpo.setEnabled(True)
+        self.btn_reset_gpo.setText("🔧 Forçar Reinstalação de GPO")
+
     def run_worker(self, action_type, extra_params=None):
         target = self.inp_target.text().strip()
         if not target:
@@ -1024,6 +1042,9 @@ class SystemManagerView(BaseView):
         elif action_type == "flush_spooler":
             self.btn_flush_spooler.setEnabled(False)
             self.btn_flush_spooler.setText("⏳ Destravando...")
+        elif action_type == "reset_gpo_printers":
+            self.btn_reset_gpo.setEnabled(False)
+            self.btn_reset_gpo.setText("⏳ Limpando GPO...")
         elif action_type == "sync_time":
             self.btn_time_resync.setEnabled(False)
             self.btn_time_reset.setEnabled(False)
@@ -1083,6 +1104,23 @@ class SystemManagerView(BaseView):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.run_worker("flush_spooler")
+
+    def reset_gpo_printers(self):
+        target = self.inp_target.text().strip()
+        if not target:
+            QMessageBox.warning(self, "Aviso", "Informe o computador alvo.")
+            return
+
+        reply = QMessageBox.question(
+            self, "Reset de GPO de Impressoras",
+            f"Deseja remover as impressoras de rede mapeadas e forçar a reaplicação da GPO em {target}?\n\n"
+            "• O serviço 'Spooler' será reiniciado.\n"
+            "• As impressoras de rede antigas (\\\\servidor\\...) serão removidas.\n"
+            "• O comando gpupdate /target:user /force será executado.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.run_worker("reset_gpo_printers")
 
     def clear_selected_printer_queue(self):
         row = self.tbl_printers.currentRow()
@@ -1233,6 +1271,7 @@ class SystemManagerView(BaseView):
                 "kill_process":        ("Encerrar Processo",      "[Gerenciador] Processos",   "get_processes"),
                 "manage_service":      ("Gerenciar Serviço",      "[Gerenciador] Serviços",    "get_services"),
                 "search_gpo_printers": ("Buscar Impressoras GPO", "[Gerenciador] Impressoras", "get_printers"),
+                "reset_gpo_printers":  ("Reset Impressoras GPO",  "[Gerenciador] Impressoras", "get_printers"),
                 "flush_spooler":       ("Destravar Spooler",      "[Gerenciador] Impressoras", "get_printers"),
                 "clear_printer_queue": ("Limpar Fila Impressão",  "[Gerenciador] Impressoras", "get_printers"),
                 "remove_printer":      ("Remover Impressora",     "[Gerenciador] Impressoras", "get_printers"),
